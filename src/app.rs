@@ -1,15 +1,19 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use bytemuck::{Pod, Zeroable};
-use glam::{EulerRot, Mat4, Quat, UVec2, Vec3, uvec2, vec3};
+use glam::UVec2;
 use wgpu::{
     BindGroup, Buffer, Device, Queue, RenderPipeline, Sampler, Surface, Texture, TextureFormat,
     TextureView, util::DeviceExt,
 };
 use winit::window::Window;
 
-use crate::mesh::{Cube, IntoMesh, Mesh};
+use crate::{
+    camera::Camera,
+    mesh::{Cube, IntoMesh, Mesh},
+    model::Model,
+};
 
+/// Main renderer
 #[derive(Debug)]
 pub struct App {
     pub window: Arc<Window>,
@@ -24,6 +28,7 @@ pub struct App {
     camera_uniform: Buffer,
     model_bind_group: BindGroup,
     model_uniform: Buffer,
+    camera: Camera,
     model: Model,
     cube: Mesh,
 }
@@ -31,7 +36,7 @@ pub struct App {
 impl App {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
-        let size = uvec2(size.width, size.height);
+        let size = glam::uvec2(size.width, size.height);
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
@@ -49,6 +54,7 @@ impl App {
         let format = capabilities.formats[0];
 
         let cube = Cube::new().mesh(&device);
+        let camera = Camera::new(size);
         let model = Model::new();
 
         let depth = DepthTexture::new(&device, size);
@@ -69,10 +75,9 @@ impl App {
             });
 
             let uniform_buffer = {
-                let uniform = CameraUniform::new(size);
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("camera uniform buffer"),
-                    contents: bytemuck::cast_slice(&[uniform]),
+                    contents: bytemuck::cast_slice(&[camera.uniform]),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
             };
@@ -197,6 +202,7 @@ impl App {
             depth,
             pipeline,
             cube,
+            camera,
             model,
             camera_bind_group,
             camera_uniform,
@@ -209,10 +215,10 @@ impl App {
         return _self;
     }
 
-    pub fn render(&mut self) {
+    pub fn render(&mut self, delta_time: &Duration) {
         // update model
         {
-            self.model.rotation += 0.005 * Vec3::ONE;
+            self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
             self.model.update();
             self.queue.write_buffer(
                 &self.model_uniform,
@@ -275,15 +281,18 @@ impl App {
     }
 
     pub fn on_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-        self.size = uvec2(size.width, size.height);
+        self.size = glam::uvec2(size.width, size.height);
         self.configure_surface();
 
         self.depth = DepthTexture::new(&self.device, self.size);
 
         // update camera uniform
-        let uniform = CameraUniform::new(self.size);
-        self.queue
-            .write_buffer(&self.camera_uniform, 0, bytemuck::cast_slice(&[uniform]));
+        self.camera.update(self.size);
+        self.queue.write_buffer(
+            &self.camera_uniform,
+            0,
+            bytemuck::cast_slice(&[self.camera.uniform]),
+        );
     }
 
     fn configure_surface(&self) {
@@ -348,70 +357,5 @@ impl DepthTexture {
             _texture: texture,
             _sampler: sampler,
         }
-    }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct CameraUniform {
-    view_proj_matrix: [[f32; 4]; 4],
-}
-
-impl CameraUniform {
-    fn new(size: UVec2) -> Self {
-        const EYE: Vec3 = vec3(1.5, -5.0, 3.0);
-        const CENTER: Vec3 = Vec3::ZERO;
-        const UP: Vec3 = Vec3::Z;
-
-        let view = Mat4::look_at_rh(EYE, CENTER, UP);
-        let projection = Mat4::perspective_rh(45.0, size.x as f32 / size.y as f32, 0.01, 100.0);
-        let view_proj_matrix = projection * view;
-
-        Self {
-            view_proj_matrix: view_proj_matrix.to_cols_array_2d(),
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-struct ModelUniform {
-    matrix: [[f32; 4]; 4],
-}
-
-#[derive(Debug, Clone)]
-struct Model {
-    position: Vec3,
-    rotation: Vec3,
-    scale: Vec3,
-    matrix: Mat4,
-    uniform: ModelUniform,
-}
-
-impl Model {
-    fn new() -> Self {
-        Self {
-            position: Vec3::ZERO,
-            rotation: Vec3::ZERO,
-            scale: Vec3::ONE,
-            matrix: Mat4::IDENTITY,
-            uniform: ModelUniform {
-                matrix: Mat4::IDENTITY.to_cols_array_2d(),
-            },
-        }
-    }
-
-    fn update(&mut self) {
-        self.matrix = Mat4::from_scale_rotation_translation(
-            self.scale,
-            Quat::from_euler(
-                EulerRot::XYZ,
-                self.rotation.x,
-                self.rotation.y,
-                self.rotation.z,
-            ),
-            self.position,
-        );
-        self.uniform.matrix = self.matrix.to_cols_array_2d();
     }
 }

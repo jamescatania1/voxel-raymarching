@@ -4,6 +4,7 @@ pub trait IntoMesh {
     fn mesh(&mut self, device: &wgpu::Device) -> Mesh;
 }
 
+/// Mesh object that is to be used with the `base.wgsl` shader.
 #[derive(Debug)]
 pub struct Mesh {
     pub vertex_buffer: Buffer,
@@ -56,6 +57,7 @@ const YELLOW: [f32; 3] = [1.0, 1.0, 0.0];
 const CYAN: [f32; 3] = [0.0, 1.0, 1.0];
 const PINK: [f32; 3] = [1.0, 0.0, 1.0];
 
+/// `Mesh` variant of a 3D cube
 #[derive(Debug)]
 pub struct Cube {
     vertices: Vec<Vertex>,

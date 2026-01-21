@@ -1,7 +1,9 @@
 mod app;
+mod camera;
 mod mesh;
+mod model;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use pollster::block_on;
 use winit::{application::ApplicationHandler, event::WindowEvent, window::Window};
@@ -11,11 +13,15 @@ use crate::app::App;
 #[derive(Debug)]
 struct Program {
     app: Option<App>,
+    prev_time: Option<Instant>,
 }
 
 impl Program {
     fn new() -> Self {
-        Self { app: None }
+        Self {
+            app: None,
+            prev_time: None,
+        }
     }
 }
 
@@ -43,7 +49,10 @@ impl ApplicationHandler for Program {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                app.render();
+                let time = Instant::now();
+                let delta_time = time - *self.prev_time.get_or_insert_with(|| time.clone());
+                app.render(&delta_time);
+                self.prev_time = Some(time);
                 app.window.request_redraw();
             }
             WindowEvent::Resized(size) => {
