@@ -1,5 +1,5 @@
 mod app;
-mod cube;
+mod mesh;
 
 use std::sync::Arc;
 
