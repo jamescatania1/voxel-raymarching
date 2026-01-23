@@ -1,21 +1,23 @@
 use std::{sync::Arc, time::Duration};
 
+use egui_wgpu::ScreenDescriptor;
 use glam::UVec2;
 use wgpu::{
     BindGroup, Buffer, Device, Queue, RenderPipeline, Sampler, Surface, Texture, TextureFormat,
     TextureView, util::DeviceExt,
 };
-use winit::{keyboard::KeyCode, window::Window};
+use winit::window::Window;
 
 use crate::{
     camera::Camera,
     input::Input,
     mesh::{IntoMesh, Mesh, VoxelMesh},
     model::Model,
+    ui::EguiRenderer,
 };
 
 /// Main renderer
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct App {
     pub window: Arc<Window>,
     pub input: Input,
@@ -23,6 +25,7 @@ pub struct App {
     queue: Queue,
     size: UVec2,
     surface: Surface<'static>,
+    pub ui: EguiRenderer,
     format: TextureFormat,
     depth: DepthTexture,
     pipeline: RenderPipeline,
@@ -55,7 +58,7 @@ impl App {
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities.formats[0];
 
-        let raw = std::include_bytes!("../assets/monu2.vox");
+        let raw = std::include_bytes!("../assets/winter.vox");
 
         let cube = VoxelMesh::new(raw).mesh(&device);
         // let cube = Cube::new().mesh(&device);
@@ -197,6 +200,8 @@ impl App {
             render_pipeline
         };
 
+        let ui = EguiRenderer::new(&device, format, None, 1, &window);
+
         let _self = Self {
             window,
             input: Input::default(),
@@ -205,6 +210,7 @@ impl App {
             size,
             surface,
             format,
+            ui,
             depth,
             pipeline,
             cube,
@@ -288,6 +294,49 @@ impl App {
 
             pass.insert_debug_marker("draw cube");
             pass.draw_indexed(0..self.cube.index_count, 0, 0..1);
+        }
+
+        // render ui
+        {
+            self.ui.begin_frame(&self.window);
+
+            egui::Window::new("winit + egui + wgpu says hello!")
+                .resizable(true)
+                .vscroll(true)
+                .default_open(true)
+                .show(self.ui.context(), |ui| {
+                    ui.label(format!("Frame: {:.2}", delta_time.as_secs_f64() * 1000.0));
+
+                    if ui.button("Button!").clicked() {
+                        println!("boom!")
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Pixels per point: {}",
+                            self.ui.context().pixels_per_point()
+                        ));
+                        if ui.button("-").clicked() {
+                            // state.scale_factor = (state.scale_factor - 0.1).max(0.3);
+                        }
+                        if ui.button("+").clicked() {
+                            // state.scale_factor = (state.scale_factor + 0.1).min(3.0);
+                        }
+                    });
+                });
+
+            self.ui.end_frame_and_draw(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &self.window,
+                &texture_view,
+                ScreenDescriptor {
+                    size_in_pixels: self.size.to_array(),
+                    pixels_per_point: self.window.scale_factor() as f32 * 1.0,
+                },
+            );
         }
 
         self.queue.submit([encoder.finish()]);

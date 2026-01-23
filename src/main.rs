@@ -3,6 +3,7 @@ mod camera;
 mod input;
 mod mesh;
 mod model;
+mod ui;
 mod vox;
 
 use std::{sync::Arc, time::Instant};
@@ -12,7 +13,7 @@ use winit::{application::ApplicationHandler, event::WindowEvent, window::Window}
 
 use crate::app::App;
 
-#[derive(Debug)]
+// #[derive(Debug)]
 struct Program {
     app: Option<App>,
     prev_time: Option<Instant>,
@@ -46,6 +47,9 @@ impl ApplicationHandler for Program {
         event: WindowEvent,
     ) {
         let app = self.app.as_mut().unwrap();
+
+        app.ui.handle_input(&app.window, &event);
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
