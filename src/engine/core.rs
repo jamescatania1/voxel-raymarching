@@ -29,7 +29,7 @@ impl Engine {
         let camera = Camera::new(window.size());
 
         let scene = {
-            let src = std::include_bytes!("../../assets/winter.vox");
+            let src = std::include_bytes!("../../assets/monu2.vox");
             Scene::load(src).unwrap()
         };
 
@@ -65,6 +65,8 @@ impl Engine {
         self.camera.update(delta_time, &self.input);
 
         // self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
+        self.model.position = -0.5 * glam::Vec3::ONE;
+        self.model.scale = glam::Vec3::ONE / self.scene.size.max_element() as f32;
         self.model.update();
 
         ctx.ui.frame_avg = ctx.ui.frame_avg.mul_f64(1.0 - FRAME_AVG_DECAY_ALPHA)

@@ -3,16 +3,15 @@ use std::{f32, sync::Arc, time::Duration};
 use glam::UVec2;
 use wgpu::{
     BindGroup, Buffer, ComputePipeline, Device, RenderPipeline, Sampler, Texture, TextureView,
-    util::DeviceExt, wgc::pipeline::VertexBufferLayout,
+    util::DeviceExt,
 };
 use winit::window::Window;
 
 use crate::{
     SizedWindow,
-    engine::{CameraUniform, Engine, ModelUniform},
+    engine::Engine,
     renderer::{
-        buffers::{SceneDataBuffer, VoxelDataBuffer},
-        mesh::{IntoMesh, Mesh, VoxelMesh},
+        buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer, VoxelDataBuffer},
         quad::Quad,
     },
     ui::{Ui, UiCtx},
@@ -49,6 +48,10 @@ struct Uniforms {
     scene_data: SceneDataBuffer,
     voxels: Buffer,
     voxels_data: VoxelDataBuffer,
+    camera: Buffer,
+    camera_data: CameraDataBuffer,
+    model: Buffer,
+    model_data: ModelDataBuffer,
 }
 
 struct Pipelines {
@@ -59,6 +62,8 @@ struct Pipelines {
 struct BindGroups {
     raymarch: Option<BindGroup>,
     post_fx: Option<BindGroup>,
+    camera: BindGroup,
+    model: BindGroup,
 }
 
 struct Textures {
@@ -161,17 +166,30 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
+            let camera_data = CameraDataBuffer::default();
+            let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("camera data uniform buffer"),
+                contents: bytemuck::cast_slice(&[camera_data]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+            let model_data = ModelDataBuffer::default();
+            let model = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("model data uniform buffer"),
+                contents: bytemuck::cast_slice(&[model_data]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
             Uniforms {
                 scene,
                 scene_data,
                 voxels,
                 voxels_data,
+                camera,
+                camera_data,
+                model,
+                model_data,
             }
-        };
-
-        let bind_groups = BindGroups {
-            raymarch: None,
-            post_fx: None,
         };
 
         let pipelines = {
@@ -235,6 +253,32 @@ impl Renderer {
             Pipelines { raymarch, post_fx }
         };
 
+        let bind_groups = {
+            let camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("camera bind group"),
+                layout: &pipelines.raymarch.get_bind_group_layout(1),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.camera.as_entire_binding(),
+                }],
+            });
+
+            let model = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("model bind group"),
+                layout: &pipelines.raymarch.get_bind_group_layout(2),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.model.as_entire_binding(),
+                }],
+            });
+
+            BindGroups {
+                raymarch: None,
+                post_fx: None,
+                camera,
+                model,
+            }
+        };
         // let pipeline = {
         //     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         //         label: Some("main pipeline layout"),
@@ -395,16 +439,18 @@ impl Renderer {
 
         // update uniform buffers
         {
-            // ctx.queue.write_buffer(
-            //     &self.camera_uniform,
-            //     0,
-            //     bytemuck::cast_slice(&[ctx.engine.camera.uniform]),
-            // );
-            // ctx.queue.write_buffer(
-            //     &self.model_uniform,
-            //     0,
-            //     bytemuck::cast_slice(&[ctx.engine.model.uniform]),
-            // );
+            self.uniforms.camera_data.update(&ctx.engine.camera);
+            ctx.queue.write_buffer(
+                &self.uniforms.camera,
+                0,
+                bytemuck::cast_slice(&[self.uniforms.camera_data]),
+            );
+            self.uniforms.model_data.update(&ctx.engine.model);
+            ctx.queue.write_buffer(
+                &self.uniforms.model,
+                0,
+                bytemuck::cast_slice(&[self.uniforms.model_data]),
+            );
         }
 
         let surface_texture = ctx.surface.get_current_texture().unwrap();
@@ -428,6 +474,8 @@ impl Renderer {
             pass.push_debug_group("prepare raymarch data");
             pass.set_pipeline(&self.pipelines.raymarch);
             pass.set_bind_group(0, &self.bind_groups.raymarch, &[]);
+            pass.set_bind_group(1, &self.bind_groups.camera, &[]);
+            pass.set_bind_group(2, &self.bind_groups.model, &[]);
             pass.pop_debug_group();
 
             pass.insert_debug_marker("raymarch");

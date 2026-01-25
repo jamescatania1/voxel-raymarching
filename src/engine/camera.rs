@@ -5,12 +5,6 @@ use winit::keyboard::KeyCode;
 
 use crate::engine::input::Input;
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CameraUniform {
-    pub view_proj_matrix: [[f32; 4]; 4],
-}
-
 #[derive(Debug)]
 pub struct Camera {
     pub position: glam::Vec3,
@@ -20,7 +14,8 @@ pub struct Camera {
     pub near: f32,
     pub far: f32,
     pub size: glam::UVec2,
-    pub uniform: CameraUniform,
+    pub view_proj: glam::Mat4,
+    pub inv_view_proj: glam::Mat4,
 }
 
 impl Camera {
@@ -28,14 +23,15 @@ impl Camera {
 
     pub fn new(size: UVec2) -> Self {
         let mut _self = Self {
-            position: glam::Vec3::NEG_Y * 5.0,
+            position: glam::vec3(0.0, -5.0, 0.0),
             velocity: glam::Vec3::ZERO,
             forward: glam::Vec3::Y,
             fov: 45.0,
             near: 0.01,
             far: 100.0,
             size,
-            uniform: CameraUniform::default(),
+            view_proj: glam::Mat4::IDENTITY,
+            inv_view_proj: glam::Mat4::IDENTITY,
         };
 
         return _self;
@@ -65,8 +61,7 @@ impl Camera {
             self.near,
             self.far,
         );
-        let view_proj = proj * view;
-
-        self.uniform.view_proj_matrix = view_proj.to_cols_array_2d();
+        self.view_proj = proj * view;
+        self.inv_view_proj = self.view_proj.inverse();
     }
 }

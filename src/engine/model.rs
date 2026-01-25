@@ -1,41 +1,27 @@
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ModelUniform {
-    pub matrix: [[f32; 4]; 4],
-}
-
-impl Default for ModelUniform {
-    fn default() -> Self {
-        Self {
-            matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
-        }
-    }
-}
-
 /// A 3D model instance with a world transform
 #[derive(Debug, Clone)]
 pub struct Model {
     pub position: glam::Vec3,
     pub rotation: glam::Vec3,
     pub scale: glam::Vec3,
-    pub uniform: ModelUniform,
+    pub transform: glam::Mat4,
+    pub inv_transform: glam::Mat4,
 }
 
 impl Model {
     pub fn new() -> Self {
         Self {
-            position: glam::vec3(-4.0, -4.0, -1.0),
+            position: glam::Vec3::ZERO,
             rotation: glam::Vec3::ZERO,
             scale: glam::Vec3::ONE * 0.05,
-            uniform: ModelUniform {
-                matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            },
+            transform: glam::Mat4::IDENTITY,
+            inv_transform: glam::Mat4::IDENTITY,
         }
     }
 
     /// Updates the model's uniform world matrix
     pub fn update(&mut self) {
-        let matrix = glam::Mat4::from_scale_rotation_translation(
+        self.transform = glam::Mat4::from_scale_rotation_translation(
             self.scale,
             glam::Quat::from_euler(
                 glam::EulerRot::XYZ,
@@ -45,6 +31,6 @@ impl Model {
             ),
             self.position,
         );
-        self.uniform.matrix = matrix.to_cols_array_2d();
+        self.inv_transform = self.transform.inverse();
     }
 }
