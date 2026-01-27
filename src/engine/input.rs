@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use glam::Vec2;
+use glam::{DVec2, Vec2};
 use winit::{
-    event::ElementState,
+    event::{DeviceEvent, ElementState, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
 };
 
@@ -10,8 +10,6 @@ use winit::{
 pub struct Input {
     pub mouse: Mouse,
     pub scroll: f64,
-    pub axis_left: f64,
-    pub axis_right: f64,
     pressed_keys: HashSet<KeyCode>,
     released_keys: HashSet<KeyCode>,
 }
@@ -21,44 +19,83 @@ impl Input {
         Self::default()
     }
 
-    pub fn on_key_event(
+    pub fn handle_input(
         &mut self,
-        event: &winit::event::KeyEvent,
         window: &winit::window::Window,
         event_loop: &winit::event_loop::ActiveEventLoop,
+        event: &winit::event::WindowEvent,
     ) {
-        if event.repeat {
-            return;
-        }
+        match event {
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(mb) = match button {
+                    winit::event::MouseButton::Left => Some(&mut self.mouse.left),
+                    winit::event::MouseButton::Right => Some(&mut self.mouse.right),
+                    _ => None,
+                } {
+                    if *state == ElementState::Pressed {
+                        mb.clicked = true;
+                        mb.down = true;
+                    } else {
+                        mb.released = true;
+                        mb.down = false;
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.repeat {
+                    return;
+                }
 
-        if let winit::keyboard::Key::Character(key) = &event.logical_key {
-            match event.state {
-                ElementState::Pressed => {
-                    if key == "f" {
-                        println!("fullscreen toggle");
-                        if window.fullscreen().is_some() {
-                            window.set_fullscreen(None);
-                        } else {
-                            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
-                                event_loop.primary_monitor(),
-                            )));
+                if let winit::keyboard::Key::Character(key) = &event.logical_key {
+                    match event.state {
+                        ElementState::Pressed => {
+                            if key == "f" {
+                                if window.fullscreen().is_some() {
+                                    window.set_fullscreen(None);
+                                } else {
+                                    window.set_fullscreen(Some(
+                                        winit::window::Fullscreen::Borderless(
+                                            event_loop.primary_monitor(),
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        ElementState::Released => {}
+                    }
+                    if key == "f" {}
+                }
+
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    match event.state {
+                        ElementState::Pressed => {
+                            self.pressed_keys.insert(code);
+                        }
+                        ElementState::Released => {
+                            self.pressed_keys.remove(&code);
                         }
                     }
                 }
-                ElementState::Released => {}
             }
-            if key == "f" {}
-        }
 
-        if let PhysicalKey::Code(code) = event.physical_key {
-            match event.state {
-                ElementState::Pressed => {
-                    self.pressed_keys.insert(code);
-                }
-                ElementState::Released => {
-                    self.pressed_keys.remove(&code);
-                }
+            _ => (),
+        }
+    }
+
+    pub fn handle_device_input(
+        &mut self,
+        window: &winit::window::Window,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        event: &winit::event::DeviceEvent,
+    ) {
+        match event {
+            DeviceEvent::Motion { axis: 0, value } => {
+                self.mouse.delta.x += *value;
             }
+            DeviceEvent::Motion { axis: 1, value } => {
+                self.mouse.delta.y += *value;
+            }
+            _ => {}
         }
     }
 
@@ -72,7 +109,7 @@ impl Input {
         self.mouse.left.released = false;
         self.mouse.right.clicked = false;
         self.mouse.right.released = false;
-        // self.mouse.delta.set_magnitude(0.0);
+        self.mouse.delta *= 0.0;
         self.mouse.scroll_delta = 0.0;
 
         // let scroll_px = window.scroll_y().unwrap_or(0.0);
@@ -168,8 +205,7 @@ pub struct Key {
 
 #[derive(Debug, Default)]
 pub struct Mouse {
-    pub position: Vec2,
-    pub delta: Vec2,
+    pub delta: DVec2,
     pub scroll_delta: f64,
     pub left: MouseButton,
     pub right: MouseButton,

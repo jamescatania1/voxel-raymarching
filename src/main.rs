@@ -6,7 +6,9 @@ mod vox;
 use std::{sync::Arc, time::Instant};
 
 use pollster::block_on;
-use winit::{application::ApplicationHandler, event::WindowEvent, window::Window};
+use winit::{
+    application::ApplicationHandler, event::DeviceEvent, event::WindowEvent, window::Window,
+};
 
 use crate::{
     engine::{Engine, EngineCtx},
@@ -39,6 +41,16 @@ impl ApplicationHandler for Program {
     ) {
         let state = self.state.as_mut().unwrap();
         state.handle_input(event_loop, &event);
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        let state = self.state.as_mut().unwrap();
+        state.handle_device_input(event_loop, &event);
     }
 }
 
@@ -109,8 +121,13 @@ impl State {
         let time = Instant::now();
         let delta_time = time - *self.prev_time.get_or_insert_with(|| time.clone());
 
-        self.engine
-            .frame(&delta_time, &mut EngineCtx { ui: &mut self.ui });
+        self.engine.frame(
+            &delta_time,
+            &mut EngineCtx {
+                window: &self.window,
+                ui: &mut self.ui,
+            },
+        );
 
         self.renderer.frame(
             &delta_time,
@@ -124,6 +141,8 @@ impl State {
                 ui: &mut self.ui,
             },
         );
+
+        self.engine.input.frame();
 
         self.prev_time = Some(time);
         self.window.request_redraw();
@@ -156,6 +175,15 @@ impl State {
             }
             _ => {}
         }
+    }
+
+    fn handle_device_input(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        event: &winit::event::DeviceEvent,
+    ) {
+        self.engine
+            .handle_device_input(&self.window, event_loop, event);
     }
 }
 

@@ -1,15 +1,9 @@
-use std::time::Duration;
+use std::{f64::consts::PI, time::Duration};
 
 use crate::{SizedWindow, ui::renderer::UIRenderer};
 
 pub struct Ui {
-    pub frame_avg: Duration,
-    pub voxel_count: u32,
-    pub scene_size: glam::IVec3,
-    pub camera_pos: glam::DVec3,
-    pub camera_forward: glam::DVec3,
-    pub camera_near: f64,
-    pub camera_far: f64,
+    pub state: UiState,
     renderer: UIRenderer,
 }
 
@@ -21,6 +15,19 @@ pub struct UiCtx<'a, 'b> {
     pub encoder: &'b mut wgpu::CommandEncoder,
 }
 
+#[derive(Debug, Default)]
+pub struct UiState {
+    pub frame_avg: Duration,
+    pub pass_avg: Vec<(String, Duration)>,
+    pub voxel_count: u32,
+    pub scene_size: glam::IVec3,
+    pub camera_pos: glam::DVec3,
+    pub camera_rotation: glam::DVec3,
+    pub camera_forward: glam::DVec3,
+    pub camera_near: f64,
+    pub camera_far: f64,
+}
+
 impl Ui {
     pub fn new(
         window: &winit::window::Window,
@@ -28,14 +35,8 @@ impl Ui {
         out_format: wgpu::TextureFormat,
     ) -> Self {
         Self {
-            frame_avg: Default::default(),
-            voxel_count: Default::default(),
-            scene_size: Default::default(),
-            camera_pos: Default::default(),
-            camera_forward: Default::default(),
-            camera_near: Default::default(),
-            camera_far: Default::default(),
             renderer: UIRenderer::new(device, out_format, window),
+            state: UiState::default(),
         }
     }
 
@@ -50,6 +51,8 @@ impl Ui {
     pub fn frame<'a>(&mut self, ctx: &mut UiCtx) {
         self.renderer.begin_frame(ctx.window);
 
+        let state = &self.state;
+
         egui::Window::new("Debug")
             .default_open(true)
             .resizable(true)
@@ -61,20 +64,28 @@ impl Ui {
                     ctx.window.size().x,
                     ctx.window.size().y
                 ));
-                ui.label(format!("FPS: {:.2}", 1.0 / self.frame_avg.as_secs_f64()));
-                ui.label(format!("Frame: {:.2?}", self.frame_avg));
+                ui.label(format!("FPS: {:.2}", 1.0 / state.frame_avg.as_secs_f64()));
+                ui.label(format!("Frame: {:.2?}", state.frame_avg));
+
+                for (pass, duration) in &state.pass_avg {
+                    ui.label(format!("{}: {:.2?}", pass, duration));
+                }
 
                 ui.separator();
 
-                ui.label(format!("Scene Size: {}", self.scene_size));
-                ui.label(format!("Voxels: {}", self.voxel_count));
+                ui.label(format!("Scene Size: {}", state.scene_size));
+                ui.label(format!("Voxels: {}", state.voxel_count));
 
                 ui.separator();
 
-                ui.label(format!("Camera Position: {:.2}", self.camera_pos));
-                ui.label(format!("View Forward: {:.2}", self.camera_forward));
-                ui.label(format!("Camera Near: {:.2}", self.camera_near));
-                ui.label(format!("Camera Far: {:.2}", self.camera_far));
+                ui.label(format!("Camera Position: {:.2}", state.camera_pos));
+                ui.label(format!(
+                    "Camera Rotation: {:.2}",
+                    (state.camera_rotation * 180.0 / PI) % 360.0,
+                ));
+                ui.label(format!("View Forward: {:.2}", state.camera_forward));
+                ui.label(format!("Camera Near: {:.2}", state.camera_near));
+                ui.label(format!("Camera Far: {:.2}", state.camera_far));
             });
 
         self.renderer.render(

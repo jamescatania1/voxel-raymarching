@@ -1,3 +1,5 @@
+use crate::renderer::tree::Tree;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SceneDataBuffer {
@@ -49,7 +51,129 @@ impl VoxelDataBuffer {
         println!("voxel data load took {:#?}", timer.elapsed());
         Self(voxels)
     }
+
+    pub fn build_tree(scene: &crate::vox::Scene) {
+        let timer = std::time::Instant::now();
+
+        let x_run = scene.size.y as usize * scene.size.z as usize;
+        let y_run = scene.size.z as usize;
+
+        let mut voxels = vec![0; scene.size.element_product() as usize];
+        for instance in scene.instances() {
+            for (pos, palette_index) in instance.voxels() {
+                let pos = (pos - scene.base).as_usizevec3();
+                let index = pos.x * x_run + pos.y * y_run + pos.z;
+                voxels[index] = palette_index;
+            }
+        }
+
+        let mut tree = Tree::new(scene.size.as_uvec3());
+
+        for x in 0..scene.size.x {
+            for y in 0..scene.size.y {
+                for z in 0..scene.size.z {
+                    let pos = glam::ivec3(x, y, z).as_uvec3();
+                    let index = pos.x as usize * x_run + pos.y as usize * y_run + pos.z as usize;
+                    let voxel = voxels[index];
+                    tree.insert(pos, voxel);
+                }
+            }
+        }
+        let mut errors = 0;
+        for x in 0..scene.size.x {
+            for y in 0..scene.size.y {
+                for z in 0..scene.size.z {
+                    let pos = glam::ivec3(x, y, z).as_uvec3();
+                    let index = pos.x as usize * x_run + pos.y as usize * y_run + pos.z as usize;
+                    let voxel = voxels[index];
+                    // assert_eq!(voxel, tree.get(pos));
+                    let tval = tree.get(pos);
+                    if tval != voxel {
+                        println!(
+                            "pos {} failed. actual: {}, tree: {}",
+                            pos,
+                            voxel,
+                            tree.get(pos)
+                        );
+                        errors += 1;
+                    }
+                }
+            }
+        }
+        println!("finished with {} errors", errors);
+
+        println!("built tree in {:#?}", timer.elapsed());
+    }
 }
+
+// type TreeKey = u32;
+
+// enum Node {
+//     Leaf(u8),
+//     Node(Box<[TreeKey; 64]>),
+// }
+
+// struct Tree {
+//     size: u32,
+//     nodes: Vec<Node>,
+// }
+// impl Tree {
+//     fn new(size: glam::UVec3) -> Self {
+//         Self {
+//             size: size.max_element().next_power_of_two(),
+//             nodes: vec![Node::Leaf(0)],
+//         }
+//     }
+//     fn insert(&mut self, pos: glam::UVec3, value: u8) {
+//         let mut cur: TreeKey = 0;
+//         let mut shift = self.size.ilog2() as i32 - 2;
+
+//         while shift > 0 {
+//             let [x, y, z] = [
+//                 (pos.x >> shift) & 3,
+//                 (pos.y >> shift) & 3,
+//                 (pos.z >> shift) & 3,
+//             ];
+//             let index = x << 4 | y << 2 | z;
+//             let node = &self.nodes[cur as usize];
+//             match node {
+//                 Node::Leaf(v) => {
+//                     if *v == value {
+//                         // already the same value
+//                         return;
+//                     }
+//                     let mut new_nodes = vec![];
+//                     let mut parent = Box::new([0; 64]);
+//                     for i in 0..64 {
+//                         let child = Node::Leaf(*v);
+//                         parent[i as usize] = self.nodes.len() as u32 + i;
+//                         new_nodes.push(child);
+//                     }
+//                     self.nodes[cur as usize] = Node::Node(parent);
+//                     cur = self.nodes.len() as u32 + index;
+//                     self.nodes.append(&mut new_nodes);
+//                 }
+//                 Node::Node(node) => {
+//                     cur = node[(index) as usize];
+//                 }
+//             };
+//             shift -= 2;
+//         }
+
+//         let [x, y, z] = if shift == 0 {
+//             [pos.x & 3, pos.y & 3, pos.z & 3]
+//         } else {
+//             [pos.x & 1, pos.y & 1, pos.z & 1]
+//         };
+//         let index = x << 4 | y << 2 | z;
+//         if let Node::Leaf(v) = self.nodes[cur as usize] {
+//             // avoid rewriting the same leaf node
+//             if v == value {
+//                 return;
+//             }
+//         }
+//     }
+// }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]

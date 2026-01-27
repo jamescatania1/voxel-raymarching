@@ -80,6 +80,8 @@ impl Renderer {
     ) -> Self {
         let textures = Textures { color: None };
 
+        VoxelDataBuffer::build_tree(&engine.scene);
+
         let uniforms = {
             let scene_data = SceneDataBuffer::new(&engine.scene);
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -398,23 +400,21 @@ impl Renderer {
             pass.draw_indexed(0..self.quad.index_count, 0, 0..1);
         }
 
-        // if let Some(timing) = &self.timing {
-        //     encoder.resolve_query_set(
-        //         &timing.query_set,
-        //         0..(2 * RenderTimer::QUERY_PASS_COUNT),
-        //         &timing.resolve_buffer,
-        //         0,
-        //     );
-        //     timing.result_buffer.map
-        //     timing.result_buffer.unmap();
-        //     encoder.copy_buffer_to_buffer(
-        //         &timing.resolve_buffer,
-        //         0,
-        //         &timing.result_buffer,
-        //         0,
-        //         timing.result_buffer.size(),
-        //     );
-        // }
+        if let Some(timing) = &self.timing {
+            encoder.resolve_query_set(
+                &timing.query_set,
+                0..(2 * RenderTimer::QUERY_PASS_COUNT),
+                &timing.resolve_buffer,
+                0,
+            );
+            encoder.copy_buffer_to_buffer(
+                &timing.resolve_buffer,
+                0,
+                &timing.result_buffer,
+                0,
+                timing.result_buffer.size(),
+            );
+        }
 
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
@@ -429,24 +429,33 @@ impl Renderer {
         ctx.window.pre_present_notify();
         surface_texture.present();
 
-        // if let Some(timing) = &self.timing {
-        //     let result_buffer = Arc::clone(&timing.result_buffer);
-        //     timing
-        //         .result_buffer
-        //         .map_async(wgpu::MapMode::Read, .., move |res| {
-        //             // if res.is_err() {
-        //             //     return;
-        //             // }
-        //             let view = result_buffer.get_mapped_range(..);
-        //             let timestamps: &[u64] = bytemuck::cast_slice(&*view);
-        //             let time_raymarch = timestamps[1] - timestamps[0];
-        //             let time_post_fx = timestamps[3] - timestamps[2];
-        //             dbg!((time_raymarch, time_post_fx));
+        if let Some(timing) = &self.timing {
+            timing
+                .result_buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |_| ());
 
-        //             drop(view);
-        //             result_buffer.unmap();
-        //         });
-        // }
+            ctx.device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(5)),
+                })
+                .unwrap();
+
+            let view = timing.result_buffer.get_mapped_range(..);
+            let timestamps: &[u64] = bytemuck::cast_slice(&*view);
+
+            let time_raymarch = Duration::from_nanos(timestamps[1] - timestamps[0]);
+            let time_post_fx = Duration::from_nanos(timestamps[3] - timestamps[2]);
+
+            ctx.ui.state.pass_avg = vec![
+                ("Raymarch".into(), time_raymarch),
+                ("Post FX".into(), time_post_fx),
+            ];
+
+            drop(view);
+            timing.result_buffer.unmap();
+        }
     }
 }
 

@@ -1,14 +1,18 @@
-use std::time::Duration;
+use std::{
+    f64::{EPSILON, consts::PI},
+    time::Duration,
+};
 
 use winit::keyboard::KeyCode;
 
 use crate::engine::input::Input;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Camera {
     pub position: glam::DVec3,
     pub velocity: glam::DVec3,
     pub forward: glam::DVec3,
+    pub rotation: glam::DVec3,
     pub fov: f64,
     pub near: f64,
     pub far: f64,
@@ -22,21 +26,22 @@ impl Camera {
 
     pub fn new(size: glam::UVec2) -> Self {
         let mut _self = Self {
-            position: glam::dvec3(0.0, -5.0, 0.0),
+            position: glam::dvec3(8.0, 14.0, 3.0),
             velocity: glam::DVec3::ZERO,
-            forward: glam::DVec3::Y,
+            rotation: glam::dvec3(0.0, 0.0, 0.0),
             fov: 45.0,
             near: 0.01,
             far: 100.0,
             size,
             view_proj: glam::DMat4::IDENTITY,
             inv_view_proj: glam::DMat4::IDENTITY,
+            ..Default::default()
         };
 
         return _self;
     }
 
-    pub fn update(&mut self, delta_time: &Duration, input: &Input) {
+    pub fn update(&mut self, delta_time: &Duration, input: &Input, cursor_locked: bool) {
         let mut in_vec = glam::ivec2(
             input.key_down(KeyCode::KeyD) as i32 - input.key_down(KeyCode::KeyA) as i32,
             input.key_down(KeyCode::KeyW) as i32 - input.key_down(KeyCode::KeyS) as i32,
@@ -44,6 +49,21 @@ impl Camera {
         .as_dvec2();
         in_vec /= in_vec.length().max(1.0);
 
+        if cursor_locked {
+            const MOUSE_SENSITIVITY: f64 = 0.001;
+            self.rotation.z -= input.mouse.delta.x * MOUSE_SENSITIVITY;
+            self.rotation.x -= input.mouse.delta.y * MOUSE_SENSITIVITY;
+            self.rotation.x = self
+                .rotation
+                .x
+                .clamp(-PI / 2.0 + EPSILON, PI / 2.0 - EPSILON);
+        }
+        self.forward = glam::dvec3(
+            self.rotation.z.cos() * self.rotation.x.cos(),
+            self.rotation.z.sin() * self.rotation.x.cos(),
+            self.rotation.x.sin(),
+        )
+        .normalize();
         let right = -Self::UP.cross(self.forward);
 
         let targ_velocity = in_vec.x * right + in_vec.y * self.forward;
