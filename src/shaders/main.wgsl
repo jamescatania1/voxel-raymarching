@@ -34,77 +34,7 @@ fn compute_main(in: ComputeIn) {
 
     let ray = start_ray(uv);
 
-    if !ray.in_bounds {
-        textureStore(out_texture, vec2<i32>(in.id.xy), vec4<f32>(0.0));
-        return;
-    }
-
-    let size = vec3<i32>(scene.size);
-
-    // DDA ray marching
-    // see https://cse.yorku.ca/~amana/research/grid.pdf
-    let pos_step = vec3<i32>(step(-ray.direction, vec3(0.0)) - step(ray.direction, vec3(0.0)));
-    let t_delta = abs(vec3(1.0) / (ray.direction + EPSILON));
-    var pos = vec3<i32>(floor(ray.origin));
-    var t_max = vec3<f32>(0.0);
-    if ray.direction.x > 0.0 {
-        t_max.x = 1.0 - fract(ray.origin.x);
-    } else {
-        t_max.x = fract(ray.origin.x);
-    }
-    if ray.direction.y > 0.0 {
-        t_max.y = 1.0 - fract(ray.origin.y);
-    } else {
-        t_max.y = fract(ray.origin.y);
-    }
-    if ray.direction.z > 0.0 {
-        t_max.z = 1.0 - fract(ray.origin.z);
-    } else {
-        t_max.z = fract(ray.origin.z);
-    }
-    t_max *= t_delta;
-
-    var res = voxel(pos);
-    for (var i = 0u; i < DDA_MAX_STEPS && res == 0u; i++) {
-        if t_max.x < t_max.y {
-            if t_max.x < t_max.z {
-                pos.x += pos_step.x;
-                if pos.x < 0 || pos.x >= size.x {
-                    break;
-                }
-                t_max.x += t_delta.x;
-            } else {
-                pos.z += pos_step.z;
-                if pos.z < 0 || pos.z >= size.z {
-                    break;
-                }
-                t_max.z += t_delta.z;
-            }
-        } else {
-            if t_max.y < t_max.z {
-                pos.y += pos_step.y;
-                if pos.y < 0 || pos.y >= size.y {
-                    break;
-                }
-                t_max.y += t_delta.y;
-            } else {
-                pos.z += pos_step.z;
-                if pos.z < 0 || pos.z >= size.z {
-                    break;
-                }
-                t_max.z += t_delta.z;
-            }
-        }
-        res = voxel(pos);
-    }
-    if res == 0u {
-        textureStore(out_texture, vec2<i32>(in.id.xy), vec4<f32>(0.0));
-        return;
-    }
-
-    var color = palette_color(res);
-
-    // color = color * 0.001 + vec4<f32>(ray.origin / 256.0, 1.0);
+    var color = raymarch(ray);
 
     textureStore(out_texture, vec2<i32>(in.id.xy), color);
 }
@@ -114,6 +44,67 @@ struct Ray {
     direction: vec3<f32>,
     in_bounds: bool,
 }
+
+fn raymarch(ray: Ray) -> vec4<f32> {
+    if !ray.in_bounds {
+        return vec4(0.0);
+    }
+
+    let size = vec3<i32>(scene.size);
+
+    let step = vec3<i32>(
+        select(-1, 1, ray.direction.x > 0.0),
+        select(-1, 1, ray.direction.y > 0.0),
+        select(-1, 1, ray.direction.z > 0.0),
+    );
+    let delta = abs(vec3(1.0) / (ray.direction + EPSILON));
+
+    var pos = vec3<i32>(floor(ray.origin));
+    var side_delta = delta * vec3(
+        select(fract(ray.origin.x), 1.0 - fract(ray.origin.x), ray.direction.x > 0.0),
+        select(fract(ray.origin.y), 1.0 - fract(ray.origin.y), ray.direction.y > 0.0),
+        select(fract(ray.origin.z), 1.0 - fract(ray.origin.z), ray.direction.z > 0.0),
+    );
+
+    for (var i = 0u; i < DDA_MAX_STEPS; i++) {
+        if side_delta.x < side_delta.y {
+            if side_delta.x < side_delta.z {
+                pos.x += step.x;
+                if pos.x < 0 || pos.x >= size.x {
+                    break;
+                }
+                side_delta.x += delta.x;
+            } else {
+                pos.z += step.z;
+                if pos.z < 0 || pos.z >= size.z {
+                    break;
+                }
+                side_delta.z += delta.z;
+            }
+        } else {
+            if side_delta.y < side_delta.z {
+                pos.y += step.y;
+                if pos.y < 0 || pos.y >= size.y {
+                    break;
+                }
+                side_delta.y += delta.y;
+            } else {
+                pos.z += step.z;
+                if pos.z < 0 || pos.z >= size.z {
+                    break;
+                }
+                side_delta.z += delta.z;
+            }
+        }
+
+        let res = voxel(pos);
+        if res != 0u {
+            return vec4(palette_color(res));
+        }
+    }
+
+    return vec4(0.0);
+} 
 
 fn start_ray(uv: vec2<f32>) -> Ray {
     let hs_far = vec2<f32>(uv.x, 1.0 - uv.y) * 2.0 - 1.0;

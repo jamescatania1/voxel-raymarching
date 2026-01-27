@@ -13,6 +13,7 @@ use crate::{
     renderer::{
         buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer, VoxelDataBuffer},
         quad::Quad,
+        tree1::PTree,
     },
     ui::{Ui, UiCtx},
 };
@@ -48,7 +49,7 @@ struct Uniforms {
     scene: Buffer,
     scene_data: SceneDataBuffer,
     voxels: Buffer,
-    voxels_data: VoxelDataBuffer,
+    // voxels_data: VoxelDataBuffer,
     camera: Buffer,
     camera_data: CameraDataBuffer,
     model: Buffer,
@@ -80,21 +81,21 @@ impl Renderer {
     ) -> Self {
         let textures = Textures { color: None };
 
-        VoxelDataBuffer::build_tree(&engine.scene);
-
         let uniforms = {
-            let scene_data = SceneDataBuffer::new(&engine.scene);
+            let voxels_data = VoxelDataBuffer::new(&engine.scene);
+            // let voxels_tree = PTree::from_scene(&engine.scene);
+            let voxels = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel data storage buffer"),
+                // contents: bytemuck::cast_slice(&voxels_tree.nodes),
+                contents: bytemuck::cast_slice(&voxels_data.0),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+
+            let scene_data = SceneDataBuffer::new(&engine.scene, 1);
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene data uniform buffer"),
                 contents: bytemuck::cast_slice(&[scene_data]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            let voxels_data = VoxelDataBuffer::new(&engine.scene);
-            let voxels = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("voxel data storage buffer"),
-                contents: bytemuck::cast_slice(&voxels_data.0),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
             let camera_data = CameraDataBuffer::default();
@@ -115,7 +116,7 @@ impl Renderer {
                 scene,
                 scene_data,
                 voxels,
-                voxels_data,
+                // voxels_data,
                 camera,
                 camera_data,
                 model,

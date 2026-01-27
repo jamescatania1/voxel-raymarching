@@ -32,7 +32,7 @@ impl Engine {
         let camera = Camera::new(window.size());
 
         let scene = {
-            let src = std::include_bytes!("../../assets/winter.vox");
+            let src = std::include_bytes!("../../assets/sponza.vox");
             Scene::load(src).unwrap()
         };
 

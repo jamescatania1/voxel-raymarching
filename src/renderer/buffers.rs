@@ -1,15 +1,15 @@
-use crate::renderer::tree::Tree;
+use crate::renderer::tree1::PTree;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SceneDataBuffer {
     size: [u32; 3],
-    _pad: u32,
+    depth: u32,
     palette: [u32; 256],
 }
 
 impl SceneDataBuffer {
-    pub fn new(scene: &crate::vox::Scene) -> Self {
+    pub fn new(scene: &crate::vox::Scene, depth: u32) -> Self {
         let mut palette = [0; 256];
         for (i, mat) in scene.palette.iter().enumerate() {
             let rgba = mat.rgba;
@@ -24,7 +24,7 @@ impl SceneDataBuffer {
                 scene.size.y as u32,
                 scene.size.z as u32,
             ],
-            _pad: 0,
+            depth,
             palette,
         }
     }
@@ -67,7 +67,8 @@ impl VoxelDataBuffer {
             }
         }
 
-        let mut tree = Tree::new(scene.size.as_uvec3());
+        // let mut tree = Tree::new(scene.size.as_uvec3());
+        let mut tree = PTree::new(scene.size.as_uvec3());
 
         for x in 0..scene.size.x {
             for y in 0..scene.size.y {
