@@ -11,11 +11,9 @@ use crate::{
     SizedWindow,
     engine::Engine,
     renderer::{
-        brick_tree::BrickMap,
-        buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer, VoxelDataBuffer},
+        buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer},
         nested_tree::TwoTree,
         quad::Quad,
-        tree1::PTree,
     },
     ui::{Ui, UiCtx},
 };
@@ -49,11 +47,9 @@ pub struct Renderer {
 
 struct Uniforms {
     scene: Buffer,
-    voxel_index: Buffer,
-    voxel_data: Buffer,
-    // scene_data: SceneDataBuffer,
-    // voxels: Buffer,
-    // voxels_data: VoxelDataBuffer,
+    voxel_chunk_index: Buffer,
+    voxel_chunks: Buffer,
+    voxel_bricks: Buffer,
     camera: Buffer,
     camera_data: CameraDataBuffer,
     model: Buffer,
@@ -108,12 +104,17 @@ impl Renderer {
             // });
 
             let voxels = TwoTree::from_scene(&engine.scene);
-            let voxel_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let voxel_chunk_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel chunk indices storage buffer"),
+                contents: bytemuck::cast_slice(&voxels.chunk_indices),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            let voxel_chunks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel chunks storage buffer"),
                 contents: bytemuck::cast_slice(&voxels.chunks),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
-            let voxel_data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let voxel_bricks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel bricks storage buffer"),
                 contents: bytemuck::cast_slice(&voxels.bricks),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -142,8 +143,9 @@ impl Renderer {
 
             Uniforms {
                 scene,
-                voxel_index,
-                voxel_data,
+                voxel_chunk_index,
+                voxel_chunks,
+                voxel_bricks,
                 camera,
                 camera_data,
                 model,
@@ -315,11 +317,15 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.uniforms.voxel_index.as_entire_binding(),
+                    resource: self.uniforms.voxel_chunk_index.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.uniforms.voxel_data.as_entire_binding(),
+                    resource: self.uniforms.voxel_chunks.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.uniforms.voxel_bricks.as_entire_binding(),
                 },
             ],
         });

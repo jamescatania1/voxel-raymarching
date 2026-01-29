@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use winit::keyboard::KeyCode;
 
@@ -31,10 +31,12 @@ impl Engine {
 
         let camera = Camera::new(window.size());
 
+        let start = Instant::now();
         let scene = {
-            let src = std::include_bytes!("../../assets/winter.vox");
+            let src = std::include_bytes!("../../assets/sponza.vox");
             Scene::load(src).unwrap()
         };
+        println!("scene load: {:?}", start.elapsed());
 
         let model = Model::new();
 
@@ -95,8 +97,8 @@ impl Engine {
             .update(delta_time, &self.input, self.cursor_locked);
 
         // self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
-        self.model.position = -0.5 * glam::Vec3::ONE;
-        self.model.scale = glam::Vec3::ONE / 16.0 as f32;
+        self.model.position = -0.5 * glam::DVec3::ONE;
+        self.model.scale = glam::DVec3::ONE / 16.0;
         // self.model.scale = glam::Vec3::ONE / self.scene.size.max_element() as f32;
         self.model.update();
 

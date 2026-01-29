@@ -202,11 +202,17 @@ impl CameraDataBuffer {
 pub struct ModelDataBuffer {
     pub transform: [[f32; 4]; 4],
     pub inv_transform: [[f32; 4]; 4],
+    pub normal_transform: [[f32; 4]; 3],
 }
 
 impl ModelDataBuffer {
     pub fn update(&mut self, model: &crate::engine::Model) {
-        self.transform = model.transform.to_cols_array_2d();
-        self.inv_transform = model.inv_transform.to_cols_array_2d();
+        self.transform = model.transform.as_mat4().to_cols_array_2d();
+        self.inv_transform = model.inv_transform.as_mat4().to_cols_array_2d();
+        self.normal_transform = glam::DMat3::from_mat4(model.inv_transform)
+            .transpose()
+            .as_mat3()
+            .to_cols_array_2d()
+            .map(|v| [v[0], v[1], v[2], 0.0]);
     }
 }

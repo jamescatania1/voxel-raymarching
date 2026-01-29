@@ -1,5 +1,6 @@
 pub struct TwoTree {
     pub size: glam::UVec3,
+    pub chunk_indices: Vec<u32>,
     pub chunks: Vec<Chunk>,
     pub bricks: Vec<Brick>,
 }
@@ -49,13 +50,19 @@ impl TwoTree {
         let size = size.map(|x| (x + 7) >> 3);
         Self {
             size,
-            chunks: vec![Chunk::default(); size.element_product() as usize],
+            chunk_indices: vec![0; size.element_product() as usize],
+            chunks: Vec::new(),
             bricks: Vec::new(),
         }
     }
 
     pub fn get(&self, pos: glam::UVec3) -> u8 {
-        let chunk = &self.chunks[chunk_index(self.size, pos) as usize];
+        let ci = self.chunk_indices[chunk_index(self.size, pos) as usize];
+        if ci == 0 {
+            return 0;
+        }
+        let chunk = &self.chunks[(ci - 1) as usize];
+
         let voxel_index = voxel_index(pos);
 
         if chunk.mask[(voxel_index >> 5) as usize] & (1 << (voxel_index & 31)) == 0 {
@@ -65,7 +72,17 @@ impl TwoTree {
     }
 
     pub fn insert(&mut self, pos: glam::UVec3, value: u8) {
-        let chunk = &mut self.chunks[chunk_index(self.size, pos) as usize];
+        let pos_index = chunk_index(self.size, pos) as usize;
+        let mut ci = self.chunk_indices[pos_index];
+        if ci == 0 {
+            if value == 0 {
+                return;
+            }
+            ci = self.chunks.len() as u32 + 1;
+            self.chunk_indices[pos_index] = ci;
+            self.chunks.push(Chunk::default());
+        }
+        let chunk = &mut self.chunks[ci as usize - 1];
         let voxel_index = voxel_index(pos);
 
         if value == 0 {
@@ -87,6 +104,37 @@ impl TwoTree {
     }
 
     pub fn from_scene(scene: &crate::vox::Scene) -> Self {
+        let timer = std::time::Instant::now();
+        let mut _self = Self::new(scene.size.as_uvec3());
+
+        for instance in scene.instances() {
+            for (pos, palette_index) in instance.voxels() {
+                let pos = (pos - scene.base).as_uvec3();
+                _self.insert(pos, palette_index);
+            }
+        }
+
+        println!("built tree in {:#?}", timer.elapsed());
+        println!(
+            "tree length: {} MB",
+            (_self.chunks.len() * 68 + _self.bricks.len() * 512) as f64 / 1000000.0
+        );
+        println!(
+            "- chunks total length: {} MB",
+            (_self.chunks.len() * 68) as f64 / 1000000.0
+        );
+        println!(
+            "- bricks total length: {} MB",
+            (_self.bricks.len() * 512) as f64 / 1000000.0
+        );
+        println!(
+            "original length: {} mb",
+            (scene.size.element_product()) as f64 / 1000000.0
+        );
+        _self
+    }
+
+    pub fn d_from_scene(scene: &crate::vox::Scene) -> Self {
         let timer = std::time::Instant::now();
 
         let x_run = scene.size.y as usize * scene.size.z as usize;
@@ -144,8 +192,16 @@ impl TwoTree {
 
         println!("built tree in {:#?}", timer.elapsed());
         println!(
-            "tree length: {} mb",
+            "tree length: {} MB",
             (_self.chunks.len() * 68 + _self.bricks.len() * 512) as f64 / 1000000.0
+        );
+        println!(
+            "- chunks total length: {} MB",
+            (_self.chunks.len() * 68) as f64 / 1000000.0
+        );
+        println!(
+            "- bricks total length: {} MB",
+            (_self.bricks.len() * 512) as f64 / 1000000.0
         );
         println!(
             "original length: {} mb",

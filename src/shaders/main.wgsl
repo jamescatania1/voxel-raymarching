@@ -12,8 +12,9 @@ struct Brick {
 }
 @group(0) @binding(0) var out_texture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var<uniform> scene: SceneData;
-@group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
-@group(0) @binding(3) var<storage, read> bricks: array<Brick>;
+@group(0) @binding(2) var<storage, read> chunk_indices: array<u32>;
+@group(0) @binding(3) var<storage, read> chunks: array<Chunk>;
+@group(0) @binding(4) var<storage, read> bricks: array<Brick>;
 
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -25,6 +26,7 @@ struct Camera {
 struct Model {
     transform: mat4x4<f32>,
     inv_transform: mat4x4<f32>,
+    normal_transform: mat3x3<f32>,
 }
 @group(2) @binding(0) var<uniform> model: Model;
 
@@ -32,7 +34,7 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const EPSILON: f32 = 1.0 / 65536.0;
+const EPSILON: f32 = 0.0001;
 const DDA_MAX_STEPS: u32 = 1000u;
 
 @compute @workgroup_size(8, 8, 1)
@@ -43,9 +45,36 @@ fn compute_main(in: ComputeIn) {
 
     let ray = start_ray(uv);
 
-    var color = raymarch(ray);
+    let res = raymarch(ray);
 
-    textureStore(out_texture, vec2<i32>(in.id.xy), color);
+    var color = vec3(0.0);
+
+    if res.material_id > 0u {
+        // let ws_normal = normalize(model.normal_transform *  res.normal);
+        let ws_normal = normalize(model.normal_transform * res.normal);
+
+        let ws_light_dir = normalize(vec3(3.0, -1.0, 10.0));
+
+        let diff = max(dot(ws_normal, ws_light_dir), 0.0);
+
+        let albedo = palette_color(res.material_id).xyz;
+
+        color = albedo * (diff + 0.2);
+        // color *= 0.000001;
+        // color += res.normal;
+    }
+
+    textureStore(out_texture, vec2<i32>(in.id.xy), vec4(color, 1.0));
+}
+
+fn palette_color(index: u32) -> vec4<f32> {
+    let rgba = scene.palette[index >> 2u][index & 3u];
+    return vec4<f32>(
+        f32((rgba >> 24u) & 0xFFu) / 255.0,
+        f32((rgba >> 16u) & 0xFFu) / 255.0,
+        f32((rgba >> 8u) & 0xFFu) / 255.0,
+        f32(rgba & 0xFFu) / 255.0
+    );
 }
 
 struct Ray {
@@ -54,9 +83,14 @@ struct Ray {
     in_bounds: bool,
 }
 
-fn raymarch(ray: Ray) -> vec4<f32> {
+struct RaymarchResult {
+    material_id: u32,
+    normal: vec3<f32>,
+}
+
+fn raymarch(ray: Ray) -> RaymarchResult {
     if !ray.in_bounds {
-        return vec4(0.0);
+        return RaymarchResult();
     }
 
     let origin = ray.origin / 8.0;
@@ -72,12 +106,16 @@ fn raymarch(ray: Ray) -> vec4<f32> {
     var pos = vec3<i32>(floor(origin));
     var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
     var prev_ray_length = vec3<f32>(0.0);
+    var mask = vec3(false);
 
     for (var i = 0u; i < DDA_MAX_STEPS && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
 
-        var chunk = chunks[pos.x * i32(scene.size.y * scene.size.z) + pos.y * i32(scene.size.z) + pos.z];
-        if chunk.brick_index > 0u {
+        let chunk_pos_index = u32(pos.x) * scene.size.y * scene.size.z + u32(pos.y) * scene.size.z + u32(pos.z);
+        let chunk_index = chunk_indices[chunk_pos_index];
+
+        if chunk_index != 0u {
             // now do dda within the brick
+            var chunk = chunks[chunk_index - 1u];
 
             let entrance_pos = origin + dir * (min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z) - EPSILON);
             let brick_origin = clamp((entrance_pos - vec3<f32>(pos)) * 8.0, vec3(EPSILON), vec3(8.0 - EPSILON));
@@ -85,55 +123,42 @@ fn raymarch(ray: Ray) -> vec4<f32> {
             var brick_pos = vec3<i32>(floor(brick_origin));
             var brick_ray_length = ray_delta * (sign(dir) * (vec3<f32>(brick_pos) - brick_origin) + (sign(dir) * 0.5) + 0.5);
 
-            while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
 
+            while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
                 let voxel_index = (brick_pos.x << 6u) | (brick_pos.y << 3u) | brick_pos.z;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
                     let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
-                    return palette_color(voxel);
+
+                    let normal = vec3<f32>(mask) * -vec3<f32>(step);
+
+                    return RaymarchResult(voxel, normal);
                 }
 
-                if brick_ray_length.x < brick_ray_length.y {
-                    if brick_ray_length.x < brick_ray_length.z {
-                        brick_pos.x += step.x;
-                        brick_ray_length.x += ray_delta.x;
-                    } else {
-                        brick_pos.z += step.z;
-                        brick_ray_length.z += ray_delta.z;
-                    }
-                } else {
-                    if brick_ray_length.y < brick_ray_length.z {
-                        brick_pos.y += step.y;
-                        brick_ray_length.y += ray_delta.y;
-                    } else {
-                        brick_pos.z += step.z;
-                        brick_ray_length.z += ray_delta.z;
-                    }
-                }
+                mask = step_mask(brick_ray_length);
+                brick_ray_length += vec3<f32>(mask) * ray_delta;
+                brick_pos += vec3<i32>(mask) * step;
             }
         }
 
         prev_ray_length = ray_length;
-        if ray_length.x < ray_length.y {
-            if ray_length.x < ray_length.z {
-                pos.x += step.x;
-                ray_length.x += ray_delta.x;
-            } else {
-                pos.z += step.z;
-                ray_length.z += ray_delta.z;
-            }
-        } else {
-            if ray_length.y < ray_length.z {
-                pos.y += step.y;
-                ray_length.y += ray_delta.y;
-            } else {
-                pos.z += step.z;
-                ray_length.z += ray_delta.z;
-            }
-        }
+
+        mask = step_mask(ray_length);
+        ray_length += vec3<f32>(mask) * ray_delta;
+        pos += vec3<i32>(mask) * step;
+        // normal = vec3<f32>(mask) * -vec3<f32>(step);
     }
 
-    return vec4(0.0);
+    return RaymarchResult();
+}
+
+fn step_mask(ray_length: vec3<f32>) -> vec3<bool> {
+    var res = vec3(false);
+
+    res.x = ray_length.x < ray_length.y && ray_length.x < ray_length.z;
+    res.y = !res.x && ray_length.y < ray_length.z;
+    res.z = !res.x && !res.y;
+
+    return res;
 }
 
 fn start_ray(uv: vec2<f32>) -> Ray {
@@ -145,6 +170,9 @@ fn start_ray(uv: vec2<f32>) -> Ray {
 
     let ws_origin = camera.ws_position;
     let ws_direction = ws_far - camera.ws_position;
+
+    // let ls_origin = ws_origin;
+    // let ls_direction = normalize(ws_direction);
 
     let ls_origin = (model.inv_transform * vec4<f32>(ws_origin, 1.0)).xyz;
     let ls_direction = normalize((model.inv_transform * vec4<f32>(ws_direction, 0.0)).xyz);
@@ -172,22 +200,4 @@ fn start_ray(uv: vec2<f32>) -> Ray {
 
 fn safe_vec3(v: vec3<f32>) -> vec3<f32> {
     return sign(v) * max(vec3(EPSILON), abs(v));
-}
-
-/// Gets palette index at the given local space position
-fn voxel(position: vec3<i32>) -> u32 {
-    let index = position.x * i32(scene.size.y) * i32(scene.size.z) + position.y * i32(scene.size.z) + position.z;
-    // return (voxels[index >> 0x2u] >> (8u * (u32(index) & 0x3u))) & 0xFFu;
-    return 1u;
-}
-
-/// Palette color lookup
-fn palette_color(index: u32) -> vec4<f32> {
-    let rgba = scene.palette[index >> 2u][index & 3u];
-    return vec4<f32>(
-        f32((rgba >> 24u) & 0xFFu) / 255.0,
-        f32((rgba >> 16u) & 0xFFu) / 255.0,
-        f32((rgba >> 8u) & 0xFFu) / 255.0,
-        f32(rgba & 0xFFu) / 255.0
-    );
 }
