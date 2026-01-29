@@ -34,7 +34,7 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const EPSILON: f32 = 0.0001;
+const EPSILON: f32 = 0.00001;
 const DDA_MAX_STEPS: u32 = 1000u;
 
 @compute @workgroup_size(8, 8, 1)
@@ -123,13 +123,27 @@ fn raymarch(ray: Ray) -> RaymarchResult {
             var brick_pos = vec3<i32>(floor(brick_origin));
             var brick_ray_length = ray_delta * (sign(dir) * (vec3<f32>(brick_pos) - brick_origin) + (sign(dir) * 0.5) + 0.5);
 
-
             while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
                 let voxel_index = (brick_pos.x << 6u) | (brick_pos.y << 3u) | brick_pos.z;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
                     let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
 
-                    let normal = vec3<f32>(mask) * -vec3<f32>(step);
+                    // just doing another raybox intersection to find the normal until i can get it to work
+                    // probably just a general numerical instability issue
+                    var normal: vec3<f32>;
+                    let voxel_min = vec3<f32>(brick_pos);
+                    let voxel_max = voxel_min + vec3(1.0);
+                    let t0 = (voxel_min - brick_origin) / safe_vec3(dir);
+                    let t1 = (voxel_max - brick_origin) / safe_vec3(dir);
+                    let t_enter = min(t0, t1);
+
+                    if t_enter.x > t_enter.y && t_enter.x > t_enter.z {
+                        normal = vec3(-sign(dir.x), 0.0, 0.0);
+                    } else if t_enter.y > t_enter.z {
+                        normal = vec3(0.0, -sign(dir.y), 0.0);
+                    } else {
+                        normal = vec3(0.0, 0.0, -sign(dir.z));
+                    }
 
                     return RaymarchResult(voxel, normal);
                 }
