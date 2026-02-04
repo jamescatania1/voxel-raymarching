@@ -1,0 +1,232 @@
+Header {
+    magic: 1179937895,
+    version: 2,
+    length: 24744,
+}
+GltfJson {
+    asset: Asset {
+        version: "2.0",
+        copyright: None,
+        generator: Some(
+            "Khronos glTF Blender I/O v5.0.21",
+        ),
+        min_version: None,
+    },
+    scene: Some(
+        0,
+    ),
+    scenes: [
+        Scene {
+            nodes: [
+                0,
+            ],
+            name: Some(
+                "Scene",
+            ),
+        },
+    ],
+    nodes: [
+        Node {
+            name: Some(
+                "Suzanne",
+            ),
+            children: [],
+            transform: Transform {
+                matrix: Mat4 {
+                    x_axis: Vec4(
+                        1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ),
+                    y_axis: Vec4(
+                        0.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                    ),
+                    z_axis: Vec4(
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                    ),
+                    w_axis: Vec4(
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                    ),
+                },
+                translation: Vec3(
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                rotation: Quat(
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ),
+                scale: Vec3(
+                    1.0,
+                    1.0,
+                    1.0,
+                ),
+            },
+        },
+    ],
+    accessors: [
+        Accessor {
+            buffer_view: Some(
+                0,
+            ),
+            byte_offset: None,
+            component_type: Float,
+            normalized: false,
+            count: 555,
+            ty: Other(
+                "VEC3",
+            ),
+            name: None,
+            max: [
+                Float(
+                    1.3671875,
+                ),
+                Float(
+                    0.984375,
+                ),
+                Float(
+                    0.8515625,
+                ),
+            ],
+            min: [
+                Float(
+                    -1.3671875,
+                ),
+                Float(
+                    -0.984375,
+                ),
+                Float(
+                    -0.8515625,
+                ),
+            ],
+        },
+        Accessor {
+            buffer_view: Some(
+                1,
+            ),
+            byte_offset: None,
+            component_type: Float,
+            normalized: false,
+            count: 555,
+            ty: Other(
+                "VEC3",
+            ),
+            name: None,
+            max: [],
+            min: [],
+        },
+        Accessor {
+            buffer_view: Some(
+                2,
+            ),
+            byte_offset: None,
+            component_type: Float,
+            normalized: false,
+            count: 555,
+            ty: Other(
+                "VEC2",
+            ),
+            name: None,
+            max: [],
+            min: [],
+        },
+        Accessor {
+            buffer_view: Some(
+                3,
+            ),
+            byte_offset: None,
+            component_type: UnsignedShort,
+            normalized: false,
+            count: 2904,
+            ty: Scalar,
+            name: None,
+            max: [],
+            min: [],
+        },
+    ],
+    meshes: [
+        Mesh {
+            primitives: [
+                Primitive {
+                    material: Some(
+                        0,
+                    ),
+                    attributes: {
+                        "POSITION": 0,
+                        "NORMAL": 1,
+                        "TEXCOORD_0": 2,
+                    },
+                    indices: Some(
+                        3,
+                    ),
+                    mode: Triangles,
+                },
+            ],
+            name: Some(
+                "Suzanne",
+            ),
+        },
+    ],
+    buffers: [
+        Buffer {
+            uri: None,
+            byte_length: 23568,
+            name: None,
+        },
+    ],
+    buffer_views: [
+        BufferView {
+            buffer: 0,
+            byte_offset: 0,
+            byte_length: 6660,
+            byte_stride: None,
+            target: Some(
+                ArrayBuffer,
+            ),
+            name: None,
+        },
+        BufferView {
+            buffer: 0,
+            byte_offset: 6660,
+            byte_length: 6660,
+            byte_stride: None,
+            target: Some(
+                ArrayBuffer,
+            ),
+            name: None,
+        },
+        BufferView {
+            buffer: 0,
+            byte_offset: 13320,
+            byte_length: 4440,
+            byte_stride: None,
+            target: Some(
+                ArrayBuffer,
+            ),
+            name: None,
+        },
+        BufferView {
+            buffer: 0,
+            byte_offset: 17760,
+            byte_length: 5808,
+            byte_stride: None,
+            target: Some(
+                ElementArrayBuffer,
+            ),
+            name: None,
+        },
+    ],
+}

@@ -59,21 +59,25 @@ struct Uniforms {
 struct Pipelines {
     raymarch: ComputePipeline,
     normal_blur: ComputePipeline,
+    deferred: ComputePipeline,
     post_fx: RenderPipeline,
 }
 
 struct BindGroups {
     raymarch: Option<BindGroup>,
     normal_blur: Option<BindGroup>,
+    deferred: Option<BindGroup>,
     post_fx: Option<BindGroup>,
     camera: BindGroup,
     model: BindGroup,
 }
 
 struct Textures {
-    color: Option<Texture>,
+    albedo: Option<Texture>,
     normal: Option<Texture>,
+    depth: Option<Texture>,
     post_normal: Option<Texture>,
+    out_color: Option<Texture>,
 }
 
 impl Renderer {
@@ -84,9 +88,11 @@ impl Renderer {
         engine: &Engine,
     ) -> Self {
         let textures = Textures {
-            color: None,
+            albedo: None,
             normal: None,
+            depth: None,
             post_normal: None,
+            out_color: None,
         };
 
         let uniforms = {
@@ -198,6 +204,24 @@ impl Renderer {
                 })
             };
 
+            let deferred = {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("deferred shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        std::include_str!("../shaders/deferred.wgsl").into(),
+                    ),
+                });
+
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("deferred pipeline"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("compute_main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            };
+
             let post_fx = {
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("post processing shader"),
@@ -240,6 +264,7 @@ impl Renderer {
             Pipelines {
                 raymarch,
                 normal_blur,
+                deferred,
                 post_fx,
             }
         };
@@ -265,8 +290,9 @@ impl Renderer {
 
             BindGroups {
                 raymarch: None,
-                post_fx: None,
                 normal_blur: None,
+                deferred: None,
+                post_fx: None,
                 camera,
                 model,
             }
@@ -300,8 +326,8 @@ impl Renderer {
     fn update_screen_resources(&mut self, window: &winit::window::Window, device: &wgpu::Device) {
         let size = window.size();
 
-        let tex_color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("out texture"),
+        let tex_albedo = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("albedo texture"),
             size: wgpu::Extent3d {
                 width: size.x,
                 height: size.y,
@@ -314,11 +340,11 @@ impl Renderer {
             mip_level_count: 1,
             view_formats: &[],
         });
-        let view_color = tex_color.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("raymarch out texture storage view"),
+        let view_albedo = tex_albedo.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("albedo texture view"),
             ..Default::default()
         });
-        self.textures.color = Some(tex_color);
+        self.textures.albedo = Some(tex_albedo);
 
         let tex_normal = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("normal texture"),
@@ -328,7 +354,7 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
             sample_count: 1,
-            format: wgpu::TextureFormat::Rgba8Snorm,
+            format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
@@ -340,6 +366,26 @@ impl Renderer {
         });
         self.textures.normal = Some(tex_normal);
 
+        let tex_depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth texture"),
+            size: wgpu::Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: 1,
+            },
+            sample_count: 1,
+            format: wgpu::TextureFormat::R32Float,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        });
+        let view_depth = tex_depth.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("depth texture view"),
+            ..Default::default()
+        });
+        self.textures.depth = Some(tex_depth);
+
         let tex_post_normal = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("post-blur normal texture"),
             size: wgpu::Extent3d {
@@ -348,7 +394,7 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
             sample_count: 1,
-            format: wgpu::TextureFormat::Rgba8Snorm,
+            format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
@@ -359,6 +405,26 @@ impl Renderer {
             ..Default::default()
         });
         self.textures.post_normal = Some(tex_post_normal);
+
+        let tex_out_color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("deferred output texture"),
+            size: wgpu::Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: 1,
+            },
+            sample_count: 1,
+            format: wgpu::TextureFormat::Rgba16Float,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        });
+        let view_out_color = tex_out_color.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("deferred output texture view"),
+            ..Default::default()
+        });
+        self.textures.out_color = Some(tex_out_color);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("g-buffer sampler"),
@@ -381,7 +447,7 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_color),
+                    resource: wgpu::BindingResource::TextureView(&view_albedo),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -389,18 +455,22 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.uniforms.scene.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&view_depth),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.uniforms.voxel_chunk_index.as_entire_binding(),
+                    resource: self.uniforms.scene.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.uniforms.voxel_chunks.as_entire_binding(),
+                    resource: self.uniforms.voxel_chunk_index.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
+                    resource: self.uniforms.voxel_chunks.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
                     resource: self.uniforms.voxel_bricks.as_entire_binding(),
                 },
             ],
@@ -421,11 +491,43 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view_depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
         });
         self.bind_groups.normal_blur = Some(bg_normal_blur);
+
+        let bg_deferred = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("deferred bind group"),
+            layout: &self.pipelines.deferred.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_out_color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view_albedo),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view_post_normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&view_depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        self.bind_groups.deferred = Some(bg_deferred);
 
         let bg_post_fx = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post fx bind group"),
@@ -433,14 +535,10 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_color),
+                    resource: wgpu::BindingResource::TextureView(&view_out_color),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view_post_normal),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
@@ -506,7 +604,13 @@ impl Renderer {
         {
             let descriptor = wgpu::ComputePassDescriptor {
                 label: Some("normal blur"),
-                timestamp_writes: None,
+                timestamp_writes: self.timing.as_ref().map(|timing| {
+                    wgpu::ComputePassTimestampWrites {
+                        query_set: &timing.query_set,
+                        beginning_of_pass_write_index: Some(2),
+                        end_of_pass_write_index: Some(3),
+                    }
+                }),
             };
             let mut pass = encoder.begin_compute_pass(&descriptor);
 
@@ -516,6 +620,29 @@ impl Renderer {
             pass.pop_debug_group();
 
             pass.insert_debug_marker("normal blur");
+            pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
+        }
+
+        // deferred pass
+        {
+            let descriptor = wgpu::ComputePassDescriptor {
+                label: Some("deferred"),
+                timestamp_writes: self.timing.as_ref().map(|timing| {
+                    wgpu::ComputePassTimestampWrites {
+                        query_set: &timing.query_set,
+                        beginning_of_pass_write_index: Some(4),
+                        end_of_pass_write_index: Some(5),
+                    }
+                }),
+            };
+            let mut pass = encoder.begin_compute_pass(&descriptor);
+
+            pass.push_debug_group("prepare deferred data");
+            pass.set_pipeline(&self.pipelines.deferred);
+            pass.set_bind_group(0, &self.bind_groups.deferred, &[]);
+            pass.pop_debug_group();
+
+            pass.insert_debug_marker("deferred pass");
             pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
         }
 
@@ -535,8 +662,8 @@ impl Renderer {
                 timestamp_writes: self.timing.as_ref().map(|timing| {
                     wgpu::RenderPassTimestampWrites {
                         query_set: &timing.query_set,
-                        beginning_of_pass_write_index: Some(2),
-                        end_of_pass_write_index: Some(3),
+                        beginning_of_pass_write_index: Some(6),
+                        end_of_pass_write_index: Some(7),
                     }
                 }),
                 depth_stencil_attachment: None,
@@ -601,10 +728,14 @@ impl Renderer {
             let timestamps: &[u64] = bytemuck::cast_slice(&*view);
 
             let time_raymarch = Duration::from_nanos(timestamps[1] - timestamps[0]);
-            let time_post_fx = Duration::from_nanos(timestamps[3] - timestamps[2]);
+            let time_normal_filter = Duration::from_nanos(timestamps[3] - timestamps[2]);
+            let time_deferred = Duration::from_nanos(timestamps[5] - timestamps[4]);
+            let time_post_fx = Duration::from_nanos(timestamps[7] - timestamps[6]);
 
             ctx.ui.state.pass_avg = vec![
                 ("Raymarch".into(), time_raymarch),
+                ("Normal Filter".into(), time_normal_filter),
+                ("Deferred".into(), time_deferred),
                 ("Post FX".into(), time_post_fx),
             ];
 
@@ -620,7 +751,7 @@ struct RenderTimer {
     result_buffer: Arc<wgpu::Buffer>,
 }
 impl RenderTimer {
-    const QUERY_PASS_COUNT: u32 = 2;
+    const QUERY_PASS_COUNT: u32 = 4;
 
     fn new(device: &Device) -> Self {
         let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {

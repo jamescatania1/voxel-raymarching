@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "vox"]
+members = ["app", "vox", "models"]
 resolver = "2"
 
 [profile.dev.package."*"]
