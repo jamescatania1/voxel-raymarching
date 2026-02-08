@@ -6,6 +6,7 @@ mod mesh;
 mod quad;
 // mod tree;
 // mod tree1;
+pub mod gltf_viewer;
 pub mod loader;
 
 pub use self::core::{Renderer, RendererCtx};
