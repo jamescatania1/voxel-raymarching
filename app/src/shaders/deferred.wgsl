@@ -17,7 +17,6 @@ fn compute_main(in: ComputeIn) {
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = (vec2<f32>(in.id.xy) + 0.5) * texel_size;
 
-    // let albedo = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0).rgb * 0.0001 + vec3(1.0);
     let albedo_sample = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0);
     let albedo = albedo_sample.rgb;
     let shadow_factor = albedo_sample.a;

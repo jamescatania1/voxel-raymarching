@@ -26,6 +26,7 @@ pub struct UiState {
     pub camera_forward: glam::DVec3,
     pub camera_near: f64,
     pub camera_far: f64,
+    pub sun_direction: glam::Vec3,
 }
 
 impl Ui {
@@ -51,8 +52,6 @@ impl Ui {
     pub fn frame<'a>(&mut self, ctx: &mut UiCtx) {
         self.renderer.begin_frame(ctx.window);
 
-        let state = &self.state;
-
         egui::Window::new("Debug")
             .default_open(true)
             .resizable(true)
@@ -64,28 +63,54 @@ impl Ui {
                     ctx.window.size().x,
                     ctx.window.size().y
                 ));
-                ui.label(format!("FPS: {:.2}", 1.0 / state.frame_avg.as_secs_f64()));
-                ui.label(format!("Frame: {:.2?}", state.frame_avg));
+                ui.label(format!(
+                    "FPS: {:.2}",
+                    1.0 / self.state.frame_avg.as_secs_f64()
+                ));
+                ui.label(format!("Frame: {:.2?}", self.state.frame_avg));
 
-                for (pass, duration) in &state.pass_avg {
+                for (pass, duration) in &self.state.pass_avg {
                     ui.label(format!("{}: {:.2?}", pass, duration));
                 }
 
                 ui.separator();
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0; // Tight spacing
 
-                ui.label(format!("Scene Size: {}", state.scene_size));
-                ui.label(format!("Voxels: {}", state.voxel_count));
+                    // X Axis (Red)
+                    ui.label(egui::RichText::new("X").color(egui::Color32::from_rgb(200, 60, 60)));
+                    ui.add(egui::DragValue::new(&mut self.state.sun_direction.x).speed(0.1));
+
+                    ui.add_space(10.0); // Space between axes
+
+                    // Y Axis (Green)
+                    ui.label(egui::RichText::new("Y").color(egui::Color32::from_rgb(60, 200, 60)));
+                    ui.add(egui::DragValue::new(&mut self.state.sun_direction.y).speed(0.1));
+
+                    ui.add_space(10.0);
+
+                    // Z Axis (Blue)
+                    ui.label(egui::RichText::new("Z").color(egui::Color32::from_rgb(60, 60, 200)));
+                    ui.add(egui::DragValue::new(&mut self.state.sun_direction.z).speed(0.1));
+                });
+                // let mut x = 0.2;
+                // ui.add(egui::Slider::new(&mut x, -1.0..=1.0).text("x"));
 
                 ui.separator();
 
-                ui.label(format!("Camera Position: {:.2}", state.camera_pos));
+                ui.label(format!("Scene Size: {}", self.state.scene_size));
+                ui.label(format!("Voxels: {}", self.state.voxel_count));
+
+                ui.separator();
+
+                ui.label(format!("Camera Position: {:.2}", self.state.camera_pos));
                 ui.label(format!(
                     "Camera Rotation: {:.2}",
-                    (state.camera_rotation * 180.0 / PI) % 360.0,
+                    (self.state.camera_rotation * 180.0 / PI) % 360.0,
                 ));
-                ui.label(format!("View Forward: {:.2}", state.camera_forward));
-                ui.label(format!("Camera Near: {:.2}", state.camera_near));
-                ui.label(format!("Camera Far: {:.2}", state.camera_far));
+                ui.label(format!("View Forward: {:.2}", self.state.camera_forward));
+                ui.label(format!("Camera Near: {:.2}", self.state.camera_near));
+                ui.label(format!("Camera Far: {:.2}", self.state.camera_far));
             });
 
         self.renderer.render(

@@ -15,7 +15,7 @@ use crate::{
     SizedWindow,
     engine::Engine,
     renderer::{
-        buffers::{self, CameraDataBuffer, ModelDataBuffer},
+        buffers::{self, CameraDataBuffer, EnvironmentDataBuffer, ModelDataBuffer},
         loader::Voxelizer,
         quad::Quad,
     },
@@ -506,6 +506,16 @@ impl Renderer {
                 0,
                 bytemuck::cast_slice(&[self.uniforms.camera_data]),
             );
+
+            ctx.queue.write_buffer(
+                &self.uniforms.environment,
+                0,
+                bytemuck::cast_slice(&[EnvironmentDataBuffer {
+                    sun_direction: ctx.ui.state.sun_direction,
+                    _pad: 0.0,
+                }]),
+            );
+
             self.uniforms.model_data.update(&ctx.engine.model);
             ctx.queue.write_buffer(
                 &self.uniforms.model,

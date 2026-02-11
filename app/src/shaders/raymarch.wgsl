@@ -196,9 +196,9 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                     let palette_index = packed & 0x3ffu;
                     let normal_packed = packed >> 11u;
 
-                    // let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
                     let normal = decode_normal_octahedral(normal_packed);
 
+                    let hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
 
                     // t_total is the total t-value traveled from the camera to the hit voxel
                     // ray.t_start refers to how far we had to project forward to get into the volume
@@ -207,7 +207,7 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                     let hit_pos = ray.origin + dir * t_total;
 
                     let shadow_ray_dir = (model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz;
-                    let shadow_ray_origin = hit_pos + shadow_ray_dir;
+                    let shadow_ray_origin = hit_pos;
 
                     let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
                     // let in_shadow = false;
