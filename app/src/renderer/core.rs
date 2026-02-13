@@ -5,11 +5,7 @@ use std::{
     time::Duration,
 };
 
-use wgpu::{
-    BindGroup, BindGroupLayout, Buffer, ComputePipeline, Device, PipelineLayout, RenderPipeline,
-    Texture, util::DeviceExt,
-};
-use winit::window::Window;
+use wgpu::util::DeviceExt;
 
 use crate::{
     SizedWindow,
@@ -33,258 +29,517 @@ pub struct RendererCtx<'a> {
 }
 
 pub struct Renderer {
-    textures: Textures,
-    uniforms: Uniforms,
+    pipeline_layouts: PipelineLayouts,
     pipelines: Pipelines,
+    bg_layouts: BindGroupLayouts,
     bind_groups: BindGroups,
+    textures: Textures,
+    samplers: Samplers,
+    buffers: Buffers,
     timing: Option<RenderTimer>,
     quad: Quad,
     sun_direction: glam::Vec3,
 }
 
-struct Uniforms {
-    scene: Buffer,
-    voxel_chunk_index: Buffer,
-    voxel_count: u32,
-    allocated_brick_slices: u32,
-    size_chunks: glam::UVec3,
-    voxel_chunks: Buffer,
-    voxels: Texture,
-    voxel_palette: Buffer,
-    camera: Buffer,
-    camera_data: CameraDataBuffer,
-    environment: Buffer,
-    model: Buffer,
-    model_data: ModelDataBuffer,
-}
-
 struct PipelineLayouts {
-    raymarch: PipelineLayout,
-    deferred: PipelineLayout,
-    post_fx: PipelineLayout,
+    raymarch: wgpu::PipelineLayout,
+    deferred: wgpu::PipelineLayout,
+    fx: wgpu::PipelineLayout,
 }
 
 struct Pipelines {
-    raymarch: ComputePipeline,
-    deferred: ComputePipeline,
-    post_fx: RenderPipeline,
+    raymarch: wgpu::ComputePipeline,
+    deferred: wgpu::ComputePipeline,
+    fx: wgpu::RenderPipeline,
 }
 
 struct BindGroupLayouts {
-    raymarch: BindGroupLayout,
-    deferred: BindGroupLayout,
-    post_fx: BindGroupLayout,
-    camera: BindGroupLayout,
-    model: BindGroupLayout,
+    raymarch_gbuffer: wgpu::BindGroupLayout,
+    raymarch_per_frame: wgpu::BindGroupLayout,
+    raymarch_voxels: wgpu::BindGroupLayout,
+    deferred_gbuffer: wgpu::BindGroupLayout,
+    fx_gbuffer: wgpu::BindGroupLayout,
 }
 
 struct BindGroups {
-    raymarch: Option<BindGroup>,
-    deferred: Option<BindGroup>,
-    post_fx: Option<BindGroup>,
-    camera: BindGroup,
-    model: BindGroup,
+    raymarch_gbuffer: Option<wgpu::BindGroup>,
+    raymarch_per_frame: wgpu::BindGroup,
+    raymarch_voxels: wgpu::BindGroup,
+    deferred_gbuffer: Option<wgpu::BindGroup>,
+    fx_gbuffer: Option<wgpu::BindGroup>,
 }
 
 struct Textures {
-    albedo: Option<Texture>,
-    normal: Option<Texture>,
-    depth: Option<Texture>,
-    out_color: Option<Texture>,
+    gbuffer_albedo: Option<wgpu::Texture>,
+    gbuffer_normal: Option<wgpu::Texture>,
+    gbuffer_depth: Option<wgpu::Texture>,
+    gbuffer_out_color: Option<wgpu::Texture>,
+    voxel_brickmap: wgpu::Texture,
 }
+
+struct Samplers {
+    linear: wgpu::Sampler,
+}
+
+struct Buffers {
+    voxel_scene_metadata: wgpu::Buffer,
+    voxel_palette: wgpu::Buffer,
+    voxel_chunk_indices: wgpu::Buffer,
+    voxel_chunks: wgpu::Buffer,
+    camera: wgpu::Buffer,
+    environment: wgpu::Buffer,
+    model: wgpu::Buffer,
+}
+
+// struct Uniforms {
+//     scene: Buffer,
+//     voxel_chunk_index: Buffer,
+//     voxel_count: u32,
+//     allocated_chunks: u32,
+//     allocated_brick_slices: u32,
+//     size_chunks: glam::UVec3,
+//     voxel_chunks: Buffer,
+//     voxels: Texture,
+//     voxel_palette: Buffer,
+//     camera: Buffer,
+//     camera_data: CameraDataBuffer,
+//     environment: Buffer,
+//     model: Buffer,
+//     model_data: ModelDataBuffer,
+// }
 
 impl Renderer {
     pub fn new(
-        window: Arc<Window>,
+        window: Arc<winit::window::Window>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         engine: &Engine,
         ui: &mut Ui,
     ) -> Self {
-        let textures = Textures {
-            albedo: None,
-            normal: None,
-            depth: None,
-            out_color: None,
+        let bg_layouts = BindGroupLayouts {
+            raymarch_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("raymarch_gbuffer"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::R32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+            raymarch_voxels: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("raymarch_voxels"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::R32Uint,
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+            raymarch_per_frame: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("raymarch_per_frame"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+            deferred_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("deferred_gbuffer"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            }),
+            fx_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fx_gbuffer"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            }),
         };
 
-        // let src = std::include_bytes!("../../assets/san_miguel.glb");
-        // let src = std::include_bytes!("../../assets/bistro.glb");
-        let src = std::include_bytes!("../../assets/sponza.glb");
-        let mut src = BufReader::new(Cursor::new(src));
-        let res = Voxelizer::load_gltf(&mut src, device, queue).unwrap();
+        let pipeline_layouts = PipelineLayouts {
+            raymarch: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("raymarch"),
+                bind_group_layouts: &[
+                    &bg_layouts.raymarch_gbuffer,
+                    &bg_layouts.raymarch_voxels,
+                    &bg_layouts.raymarch_per_frame,
+                ],
+                immediate_size: 0,
+            }),
+            deferred: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("deferred"),
+                bind_group_layouts: &[&bg_layouts.deferred_gbuffer],
+                immediate_size: 0,
+            }),
+            fx: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("fx"),
+                bind_group_layouts: &[&bg_layouts.fx_gbuffer],
+                immediate_size: 0,
+            }),
+        };
 
-        let uniforms = {
-            #[repr(C)]
-            #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-            struct SceneBufferData {
-                size: glam::UVec3,
-                _pad: u32,
-            }
-            let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("scene data uniform buffer"),
-                contents: bytemuck::cast_slice(&[SceneBufferData {
-                    size: res.size_chunks,
-                    _pad: 0,
-                }]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
+        struct Shaders {
+            raymarch: wgpu::ShaderModule,
+            deferred: wgpu::ShaderModule,
+            fx: wgpu::ShaderModule,
+        }
+        let shaders = Shaders {
+            raymarch: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("raymarch"),
+                source: wgpu::ShaderSource::Wgsl(
+                    std::include_str!("../shaders/raymarch.wgsl").into(),
+                ),
+            }),
+            deferred: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("deferred"),
+                source: wgpu::ShaderSource::Wgsl(
+                    std::include_str!("../shaders/deferred.wgsl").into(),
+                ),
+            }),
+            fx: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("post processing shader"),
+                source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/fx.wgsl").into()),
+            }),
+        };
 
-            let environment = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("scene environment uniform buffer"),
-                size: size_of::<buffers::EnvironmentDataBuffer>() as u64,
+        let pipelines = Pipelines {
+            raymarch: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("raymarch"),
+                layout: Some(&pipeline_layouts.raymarch),
+                module: &shaders.raymarch,
+                entry_point: Some("compute_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            }),
+            deferred: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("deferred"),
+                layout: Some(&pipeline_layouts.deferred),
+                module: &shaders.deferred,
+                entry_point: Some("compute_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            }),
+            fx: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("post fx pipeline"),
+                layout: Some(&pipeline_layouts.fx),
+                vertex: wgpu::VertexState {
+                    module: &shaders.fx,
+                    entry_point: Some("vs_main"),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: crate::renderer::quad::VERTEX_SIZE,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        }],
+                    }],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shaders.fx,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(format.into())],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                cache: None,
+                multiview_mask: None,
+            }),
+        };
+
+        let scene = {
+            // let src = std::include_bytes!("../../assets/san_miguel.glb");
+            // let src = std::include_bytes!("../../assets/bistro.glb");
+            let src = std::include_bytes!("../../assets/sponza.glb");
+            let mut src = BufReader::new(Cursor::new(src));
+            Voxelizer::load_gltf(&mut src, device, queue).unwrap()
+        };
+
+        let textures = Textures {
+            gbuffer_albedo: None,
+            gbuffer_normal: None,
+            gbuffer_depth: None,
+            gbuffer_out_color: None,
+            voxel_brickmap: scene.tex_brickmap,
+        };
+
+        let samplers = Samplers {
+            linear: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("linear"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            }),
+        };
+
+        let buffers = Buffers {
+            voxel_scene_metadata: {
+                #[repr(C)]
+                #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+                struct BufferVoxelSceneMetadata {
+                    size_chunks: glam::UVec3,
+                    _pad: u32,
+                }
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("voxel_scene_metadata"),
+                    contents: bytemuck::cast_slice(&[BufferVoxelSceneMetadata {
+                        size_chunks: scene.size_chunks,
+                        _pad: 0,
+                    }]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+            },
+            voxel_palette: scene.buffer_palette,
+            voxel_chunk_indices: scene.buffer_chunk_indices,
+            voxel_chunks: scene.buffer_chunks,
+            camera: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("camera"),
+                size: std::mem::size_of::<buffers::CameraDataBuffer>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            });
-
-            let camera_data = CameraDataBuffer::default();
-            let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("camera data uniform buffer"),
-                contents: bytemuck::cast_slice(&[camera_data]),
+            }),
+            environment: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("environment"),
+                size: std::mem::size_of::<buffers::EnvironmentDataBuffer>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            let model_data = ModelDataBuffer::default();
-            let model = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("model data uniform buffer"),
-                contents: bytemuck::cast_slice(&[model_data]),
+                mapped_at_creation: false,
+            }),
+            model: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("model"),
+                size: std::mem::size_of::<buffers::ModelDataBuffer>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            dbg!(&res.size_chunks, &res.allocated_brick_slices);
-            Uniforms {
-                scene,
-                voxel_chunk_index: res.buffer_chunk_indices,
-                voxel_chunks: res.buffer_chunks,
-                voxel_count: res.voxel_count,
-                allocated_brick_slices: res.allocated_brick_slices,
-                size_chunks: res.size_chunks,
-                voxels: res.tex_brickmap,
-                voxel_palette: res.buffer_palette,
-                camera,
-                camera_data,
-                environment,
-                model,
-                model_data,
-            }
+                mapped_at_creation: false,
+            }),
         };
 
-        let pipelines = {
-            let raymarch = {
-                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("raymarch shader"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        std::include_str!("../shaders/raymarch.wgsl").into(),
-                    ),
-                });
-
-                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("raymarch pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("compute_main"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-            };
-
-            let deferred = {
-                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("deferred shader"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        std::include_str!("../shaders/deferred.wgsl").into(),
-                    ),
-                });
-
-                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("deferred pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("compute_main"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-            };
-
-            let post_fx = {
-                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("post processing shader"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        std::include_str!("../shaders/fx.wgsl").into(),
-                    ),
-                });
-
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("post fx pipeline"),
-                    layout: None,
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some("vs_main"),
-                        buffers: &[wgpu::VertexBufferLayout {
-                            array_stride: crate::renderer::quad::VERTEX_SIZE,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &[wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x2,
-                                offset: 0,
-                                shader_location: 0,
-                            }],
-                        }],
-                        compilation_options: Default::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some("fs_main"),
-                        compilation_options: Default::default(),
-                        targets: &[Some(format.into())],
-                    }),
-                    primitive: Default::default(),
-                    depth_stencil: None,
-                    multisample: Default::default(),
-                    cache: None,
-                    multiview_mask: None,
-                })
-            };
-
-            Pipelines {
-                raymarch,
-                deferred,
-                post_fx,
-            }
-        };
-
-        let bind_groups = {
-            let camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("camera bind group"),
-                layout: &pipelines.raymarch.get_bind_group_layout(1),
+        let bind_groups = BindGroups {
+            raymarch_gbuffer: None,
+            raymarch_voxels: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("raymarch_voxels"),
+                layout: &bg_layouts.raymarch_voxels,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: uniforms.camera.as_entire_binding(),
+                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: uniforms.environment.as_entire_binding(),
+                        resource: buffers.voxel_palette.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: buffers.voxel_chunk_indices.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &buffers.voxel_chunks,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new((scene.allocated_chunks * 64) as u64),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures
+                                .voxel_brickmap
+                                .create_view(&wgpu::TextureViewDescriptor {
+                                    label: Some("voxel_brickmap"),
+                                    usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                                    ..Default::default()
+                                }),
+                        ),
                     },
                 ],
-            });
-
-            let model = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("model bind group"),
-                layout: &pipelines.raymarch.get_bind_group_layout(2),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.model.as_entire_binding(),
-                }],
-            });
-
-            BindGroups {
-                raymarch: None,
-                deferred: None,
-                post_fx: None,
-                camera,
-                model,
-            }
+            }),
+            raymarch_per_frame: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("raymarch_per_frame"),
+                layout: &bg_layouts.raymarch_per_frame,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.camera.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.environment.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: buffers.model.as_entire_binding(),
+                    },
+                ],
+            }),
+            deferred_gbuffer: None,
+            fx_gbuffer: None,
         };
 
         let timing = device
@@ -299,10 +554,13 @@ impl Renderer {
         ui.state.shadow_bias = 0.001;
 
         let mut _self = Self {
+            pipeline_layouts,
             pipelines,
+            bg_layouts,
             bind_groups,
             textures,
-            uniforms,
+            samplers,
+            buffers,
             timing,
             quad,
             sun_direction: Default::default(),
@@ -338,7 +596,7 @@ impl Renderer {
             label: Some("albedo texture view"),
             ..Default::default()
         });
-        self.textures.albedo = Some(tex_albedo);
+        self.textures.gbuffer_albedo = Some(tex_albedo);
 
         let tex_normal = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("normal texture"),
@@ -358,7 +616,7 @@ impl Renderer {
             label: Some("normal texture storage view"),
             ..Default::default()
         });
-        self.textures.normal = Some(tex_normal);
+        self.textures.gbuffer_normal = Some(tex_normal);
 
         let tex_depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("depth texture"),
@@ -378,7 +636,7 @@ impl Renderer {
             label: Some("depth texture view"),
             ..Default::default()
         });
-        self.textures.depth = Some(tex_depth);
+        self.textures.gbuffer_depth = Some(tex_depth);
 
         let tex_out_color = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("deferred output texture"),
@@ -398,103 +656,59 @@ impl Renderer {
             label: Some("deferred output texture view"),
             ..Default::default()
         });
-        self.textures.out_color = Some(tex_out_color);
+        self.textures.gbuffer_out_color = Some(tex_out_color);
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("g-buffer sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: f32::MAX,
-            compare: None,
-            anisotropy_clamp: 1,
-            border_color: None,
-        });
+        self.bind_groups.raymarch_gbuffer =
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("raymarch_gbuffer"),
+                layout: &self.bg_layouts.raymarch_gbuffer,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view_albedo),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&view_normal),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&view_depth),
+                    },
+                ],
+            }));
 
-        let bg_raymarch = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("raymarch bind group"),
-            layout: &self.pipelines.raymarch.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_albedo),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view_normal),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view_depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.uniforms.scene.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.uniforms.voxel_chunk_index.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: self.uniforms.voxel_chunks.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self
-                            .uniforms
-                            .voxels
-                            .create_view(&wgpu::TextureViewDescriptor {
-                                label: Some("voxels"),
-                                usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
-                                ..Default::default()
-                            }),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: self.uniforms.voxel_palette.as_entire_binding(),
-                },
-            ],
-        });
-        self.bind_groups.raymarch = Some(bg_raymarch);
+        self.bind_groups.deferred_gbuffer =
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("deferred_gbuffer"),
+                layout: &self.bg_layouts.deferred_gbuffer,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view_out_color),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&view_albedo),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&view_normal),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&view_depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
+                    },
+                ],
+            }));
 
-        let bg_deferred = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("deferred bind group"),
-            layout: &self.pipelines.deferred.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_out_color),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view_albedo),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view_normal),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&view_depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        self.bind_groups.deferred = Some(bg_deferred);
-
-        let bg_post_fx = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.bind_groups.fx_gbuffer = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post fx bind group"),
-            layout: &self.pipelines.post_fx.get_bind_group_layout(0),
+            layout: &self.bg_layouts.fx_gbuffer,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -502,11 +716,10 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
                 },
             ],
-        });
-        self.bind_groups.post_fx = Some(bg_post_fx);
+        }));
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {
@@ -514,11 +727,12 @@ impl Renderer {
 
         // update uniform buffers
         {
-            self.uniforms.camera_data.update(&ctx.engine.camera);
+            let mut camera_data = CameraDataBuffer::default();
+            camera_data.update(&ctx.engine.camera);
             ctx.queue.write_buffer(
-                &self.uniforms.camera,
+                &self.buffers.camera,
                 0,
-                bytemuck::cast_slice(&[self.uniforms.camera_data]),
+                bytemuck::cast_slice(&[camera_data]),
             );
 
             self.sun_direction = glam::vec3(
@@ -528,7 +742,7 @@ impl Renderer {
             )
             .normalize();
             ctx.queue.write_buffer(
-                &self.uniforms.environment,
+                &self.buffers.environment,
                 0,
                 bytemuck::cast_slice(&[EnvironmentDataBuffer {
                     sun_direction: self.sun_direction,
@@ -536,12 +750,10 @@ impl Renderer {
                 }]),
             );
 
-            self.uniforms.model_data.update(&ctx.engine.model);
-            ctx.queue.write_buffer(
-                &self.uniforms.model,
-                0,
-                bytemuck::cast_slice(&[self.uniforms.model_data]),
-            );
+            let mut model_data = ModelDataBuffer::default();
+            model_data.update(&ctx.engine.model);
+            ctx.queue
+                .write_buffer(&self.buffers.model, 0, bytemuck::cast_slice(&[model_data]));
         }
 
         let surface_texture = ctx.surface.get_current_texture().unwrap();
@@ -568,12 +780,10 @@ impl Renderer {
             };
             let mut pass = encoder.begin_compute_pass(&descriptor);
 
-            pass.push_debug_group("prepare raymarch data");
             pass.set_pipeline(&self.pipelines.raymarch);
-            pass.set_bind_group(0, &self.bind_groups.raymarch, &[]);
-            pass.set_bind_group(1, &self.bind_groups.camera, &[]);
-            pass.set_bind_group(2, &self.bind_groups.model, &[]);
-            pass.pop_debug_group();
+            pass.set_bind_group(0, &self.bind_groups.raymarch_gbuffer, &[]);
+            pass.set_bind_group(1, &self.bind_groups.raymarch_voxels, &[]);
+            pass.set_bind_group(2, &self.bind_groups.raymarch_per_frame, &[]);
 
             pass.insert_debug_marker("raymarch");
             pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
@@ -593,12 +803,10 @@ impl Renderer {
             };
             let mut pass = encoder.begin_compute_pass(&descriptor);
 
-            pass.push_debug_group("prepare deferred data");
             pass.set_pipeline(&self.pipelines.deferred);
-            pass.set_bind_group(0, &self.bind_groups.deferred, &[]);
-            pass.pop_debug_group();
+            pass.set_bind_group(0, &self.bind_groups.deferred_gbuffer, &[]);
 
-            pass.insert_debug_marker("deferred pass");
+            pass.insert_debug_marker("deferred");
             pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
         }
 
@@ -628,14 +836,12 @@ impl Renderer {
             };
             let mut pass = encoder.begin_render_pass(&descriptor);
 
-            pass.push_debug_group("prepare post fx data");
-            pass.set_pipeline(&self.pipelines.post_fx);
-            pass.set_bind_group(0, &self.bind_groups.post_fx, &[]);
+            pass.set_pipeline(&self.pipelines.fx);
+            pass.set_bind_group(0, &self.bind_groups.fx_gbuffer, &[]);
             pass.set_index_buffer(self.quad.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, self.quad.vertex_buffer.slice(..));
-            pass.pop_debug_group();
 
-            pass.insert_debug_marker("post fx");
+            pass.insert_debug_marker("fx");
             pass.draw_indexed(0..self.quad.index_count, 0, 0..1);
         }
 
@@ -655,7 +861,7 @@ impl Renderer {
             );
         }
 
-        ctx.ui.state.voxel_count = self.uniforms.voxel_count;
+        // ctx.ui.state.voxel_count = self..voxel_count;
         // ctx.ui.state.scene_size = self.uniforms.voxels.dimension();
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
@@ -710,7 +916,7 @@ struct RenderTimer {
 impl RenderTimer {
     const QUERY_PASS_COUNT: u32 = 3;
 
-    fn new(device: &Device) -> Self {
+    fn new(device: &wgpu::Device) -> Self {
         let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: Some("timestamp query set"),
             ty: wgpu::QueryType::Timestamp,

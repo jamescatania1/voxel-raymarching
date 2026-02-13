@@ -18,6 +18,7 @@ pub struct VoxelizeResult {
     pub size: glam::IVec3,
     pub size_chunks: glam::UVec3,
     pub voxel_count: u32,
+    pub allocated_chunks: u32,
     pub allocated_brick_slices: u32,
 }
 
@@ -349,7 +350,6 @@ impl Voxelizer {
             #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
             struct AllocatorResults {
                 chunk_count: u32,
-                brick_count: u32,
                 voxel_count: u32,
             }
             brickmap
@@ -367,9 +367,8 @@ impl Voxelizer {
         };
 
         let voxel_count = alloc_results.voxel_count;
-        let allocated_brick_slices = alloc_results
-            .brick_count
-            .div_ceil(size_chunks.x * size_chunks.y);
+        let allocated_chunks = alloc_results.chunk_count;
+        let allocated_brick_slices = allocated_chunks.div_ceil(size_chunks.x * size_chunks.y);
 
         let size = size_scaled.as_ivec3();
 
@@ -423,6 +422,7 @@ impl Voxelizer {
             size,
             size_chunks,
             voxel_count,
+            allocated_chunks,
             allocated_brick_slices,
         })
     }
@@ -840,7 +840,7 @@ impl Voxelizer {
         size_chunks: glam::UVec3,
     ) -> BrickmapData {
         // create tree data bind group
-        // this contains the resulting storage buffers that make up the voxel brickmap
+        // this contains the resulting storage buffers/texture that make up the voxel brickmap
         let buffer_chunk_indices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("chunk indices"),
             size: (size_chunks.element_product() as u64) * 4,
@@ -849,7 +849,7 @@ impl Voxelizer {
         });
         let buffer_chunks = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("chunk data"),
-            size: (size_chunks.element_product() as u64) * 68,
+            size: (size_chunks.element_product() as u64) * 64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -896,14 +896,14 @@ impl Voxelizer {
         // contains both the raw brickmap texture, and atomic counters for building the brickmap
         let buffer_alloc_data = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brickmap allocator data"),
-            size: 12,
+            size: 8,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         // i read from the alloc metadata buffer by copying it here
         let buffer_alloc_results = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brickmap allocator result buffer"),
-            size: 12,
+            size: 8,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });

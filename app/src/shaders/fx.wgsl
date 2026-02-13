@@ -18,8 +18,8 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = fxaa(in.position, in.uv);
-    // let color = textureSample(tex_color, main_sampler, in.uv).rgb;
+    // let color = fxaa(in.position, in.uv);
+    let color = textureSample(tex_color, main_sampler, in.uv).rgb;
     return vec4(color, 1.0);
 }
 

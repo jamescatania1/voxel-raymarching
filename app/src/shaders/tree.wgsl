@@ -1,5 +1,5 @@
 struct Chunk {
-    brick_index: u32,
+    // brick_index: u32,
     mask: array<u32, 16>,
 }
 @group(0) @binding(0) var<storage, read_write> chunk_indices: array<u32>;
@@ -8,7 +8,6 @@ struct Chunk {
 
 struct Allocator {
     chunk_count: atomic<u32>, // the total number of chunks allocated
-    brick_count: atomic<u32>, // the total number of bricks allocated. should equal chunk_count
     voxel_count: atomic<u32>, // total number of voxels in the scene
 }
 struct Palette {
@@ -20,7 +19,7 @@ struct Palette {
 
 struct ComputeIn {
     @builtin(workgroup_id) chunk_pos: vec3<u32>,
-    @builtin(num_workgroups) chunk_count: vec3<u32>,
+    @builtin(num_workgroups) size_chunks: vec3<u32>,
     @builtin(local_invocation_index) brick_index: u32,
     @builtin(local_invocation_id) brick_pos: vec3<u32>,
     @builtin(global_invocation_id) voxel_pos: vec3<u32>,
@@ -31,7 +30,6 @@ struct BrickGroup {
     base_pos: vec3<u32>,
     data: array<u32, 512>,
 }
-// var<workgroup> brick: array<u32, 512>;
 var<workgroup> brick: BrickGroup;
 
 @compute @workgroup_size(8, 8, 8)
@@ -84,14 +82,14 @@ fn compute_main(in: ComputeIn) {
             brick.is_empty = true;
         } else {
             let chunk_index = atomicAdd(&alloc.chunk_count, 1u);
-            let brick_index = atomicAdd(&alloc.brick_count, 1u);
+            // let brick_index = atomicAdd(&alloc.brick_count, 1u);
             atomicAdd(&alloc.voxel_count, brick_voxel_count);
 
             // pointer to the chunk
-            chunk_indices[in.chunk_pos.z * in.chunk_count.y * in.chunk_count.x + in.chunk_pos.y * in.chunk_count.x + in.chunk_pos.x] = chunk_index + 1u;
+            chunk_indices[in.chunk_pos.z * in.size_chunks.y * in.size_chunks.x + in.chunk_pos.y * in.size_chunks.x + in.chunk_pos.x] = chunk_index + 1u;
 
             // build chunk
-            chunks[chunk_index].brick_index = brick_index + 1u;
+            // chunks[chunk_index].brick_index = brick_index + 1u;
             chunks[chunk_index].mask = mask;
 
             var size_bricks = textureDimensions(voxels);
@@ -99,9 +97,9 @@ fn compute_main(in: ComputeIn) {
                 size_bricks.y = (size_bricks.y + 7u) >> 3u;
                 size_bricks.z = (size_bricks.z + 7u) >> 3u;
             brick.base_pos = vec3<u32>(
-                (brick_index % size_bricks.x) << 3u,
-                ((brick_index / size_bricks.x) % size_bricks.y) << 3u,
-                (brick_index / (size_bricks.x * size_bricks.y)) << 3u
+                (chunk_index % size_bricks.x) << 3u,
+                ((chunk_index / size_bricks.x) % size_bricks.y) << 3u,
+                (chunk_index / (size_bricks.x * size_bricks.y)) << 3u
             );
             brick.is_empty = false;
         }

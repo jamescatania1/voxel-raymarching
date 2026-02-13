@@ -27,7 +27,7 @@ impl Camera {
     pub fn new(size: glam::UVec2) -> Self {
         let mut _self = Self {
             // position: glam::dvec3(8.0, 14.0, 3.0),
-            position: glam::dvec3(-3.0, 0.0, 0.0),
+            position: glam::dvec3(9.0, 14.0, 5.0),
             velocity: glam::DVec3::ZERO,
             rotation: glam::dvec3(0.0, 0.0, 0.0),
             fov: 90.0 * (PI / 180.0),
