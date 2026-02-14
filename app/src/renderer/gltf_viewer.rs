@@ -453,8 +453,7 @@ impl ModelViewer {
     }
 
     pub fn frame<'a>(&mut self, ctx: &'a mut RendererCtx) {
-        let mut camera_data = CameraDataBuffer::default();
-        camera_data.update(&ctx.engine.camera);
+        let camera_data = CameraDataBuffer::from_camera(&ctx.engine.camera);
         ctx.queue
             .write_buffer(&self.buffer_camera, 0, bytemuck::cast_slice(&[camera_data]));
 

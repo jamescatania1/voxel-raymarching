@@ -1,6 +1,7 @@
 @group(0) @binding(0) var out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var out_normal: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var out_depth: texture_storage_2d<r32float, write>;
+@group(0) @binding(3) var out_velocity: texture_storage_2d<rgba16float, write>;
 
 struct VoxelSceneMetadata {
     size: vec3<u32>,
@@ -20,6 +21,8 @@ struct Chunk {
 struct Environment {
     sun_direction: vec3<f32>,
     shadow_bias: f32,
+    camera: Camera,
+    prev_camera: Camera,
 }
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -35,9 +38,9 @@ struct Model {
     inv_transform: mat4x4<f32>,
     normal_transform: mat3x3<f32>,
 }
-@group(2) @binding(0) var<uniform> camera: Camera;
-@group(2) @binding(1) var<uniform> environment: Environment;
-@group(2) @binding(2) var<uniform> model: Model;
+@group(2) @binding(0) var<uniform> environment: Environment;
+// @group(2) @binding(1) var<uniform> environment: Environment;
+@group(2) @binding(1) var<uniform> model: Model;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -47,34 +50,52 @@ const DDA_MAX_STEPS: u32 = 300u;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
-
     let ray = start_ray(in.id.xy);
 
     let res = raymarch(ray);
 
-    var albedo = vec3(0.0);
+    // var albedo = vec3(0.0);
+    var albedo = vec3(0.5, 0.9, 1.5);
     var normal = vec3(0.0);
     var depth = 0.0;
     var shadow_factor = 0.0;
+    var velocity = vec2(0.);
 
     if res.hit {
         albedo = palette_color(res.palette_index);
         normal = normalize(model.normal_transform * res.normal);
 
-        depth = res.t_total * dot(ray.direction, camera.forward);
-        depth = (depth - camera.near) / (camera.far - camera.near);
+        let world_pos = (model.transform * vec4<f32>(res.local_pos, 1.0)).xyz;
+
+        depth = dot(world_pos - environment.camera.ws_position, environment.camera.forward);
+        depth = (depth - environment.camera.near) / (environment.camera.far - environment.camera.near);
 
         if res.in_shadow {
             shadow_factor = 1.0;
         }
+
+        let dimensions = textureDimensions(out_albedo).xy;
+        let uv = (vec2<f32>(in.id.xy) + 0.5) / vec2<f32>(dimensions);
+
+        let cs_prev_pos = environment.prev_camera.view_proj * vec4<f32>(world_pos, 1.0);
+        let ndc_prev = cs_prev_pos.xy / cs_prev_pos.w;
+        let uv_prev = vec2(ndc_prev.x * 0.5 + 0.5, (-ndc_prev.y) * 0.5 + 0.5);
+        // var prev_uv = ndc_prev * 0.5 + 0.5;
+        // prev_uv.y = 1.0 - prev_uv.y;
+
+        velocity = uv - uv_prev;
+        // velocity = res.local_pos.xy * 0.01;
+        // velocity = world_pos.xy;
     }
 
     textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, shadow_factor));
     textureStore(out_normal, vec2<i32>(in.id.xy), vec4(normal, 1.0));
     textureStore(out_depth, vec2<i32>(in.id.xy), vec4(depth, 0.0, 0.0, 1.0));
+    textureStore(out_velocity, vec2<i32>(in.id.xy), vec4(velocity, 0.0, 1.0));
 }
 
 struct Ray {
+    ls_origin: vec3<f32>,
     origin: vec3<f32>,
     direction: vec3<f32>,
     t_start: f32,
@@ -86,6 +107,7 @@ struct RaymarchResult {
     palette_index: u32,
     normal: vec3<f32>,
     t_total: f32,
+    local_pos: vec3<f32>,
     in_shadow: bool,
 }
 
@@ -207,18 +229,16 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                     // ray.t_start refers to how far we had to project forward to get into the volume
                     let t_brick_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
                     let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
-                    let hit_pos = ray.origin + dir * t_total;
+                    let local_pos = ray.ls_origin + dir * t_total;
 
-                    // let shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
-                    // let shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
                     // var shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
                     var shadow_ray_dir = normalize(environment.sun_direction);
-                    let shadow_ray_origin = hit_pos + environment.shadow_bias * hit_normal;
+                    let shadow_ray_origin = local_pos + environment.shadow_bias * hit_normal;
 
                     // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
                     let in_shadow = false;
 
-                    return RaymarchResult(true, palette_index, normal, t_total, in_shadow);
+                    return RaymarchResult(true, palette_index, normal, t_total, local_pos, in_shadow);
                 }
 
                 prev_ray_length = brick_ray_length;
@@ -283,20 +303,34 @@ fn step_mask(ray_length: vec3<f32>) -> vec3<bool> {
 }
 
 fn start_ray(pos: vec2<u32>) -> Ray {
+    let camera = environment.camera;
     let dimensions = textureDimensions(out_albedo).xy;
-    let uv = vec2<f32>(pos) / vec2<f32>(dimensions);
+    // let uv = (vec2<f32>(pos) + 0.5) / vec2<f32>(dimensions);
 
-    let forward = normalize(camera.forward);
-    let right = normalize(cross(vec3<f32>(0.0, 0.0, -1.0), forward));
-    let up = normalize(cross(forward, right));
+    // let forward = normalize(camera.forward);
+    // let right = normalize(cross(vec3<f32>(0.0, 0.0, -1.0), forward));
+    // let up = normalize(cross(forward, right));
 
-    let vp_size = 2.0 * vec2<f32>(
-        camera.near * tan(0.5 * camera.fov),
-        camera.near * tan(0.5 * camera.fov) * f32(dimensions.y) / f32(dimensions.x),
-    );
-    let vp_origin = (camera.ws_position + forward * camera.near) - (0.5 * vp_size.x * right) - (0.5 * vp_size.y * up);
-    let ws_origin = vp_origin + (uv.x * vp_size.x * right) + (uv.y * vp_size.y * up);
-    let ws_direction = normalize(ws_origin - camera.ws_position);
+    // let vp_size = 2.0 * vec2<f32>(
+    //     camera.near * tan(0.5 * camera.fov),
+    //     camera.near * tan(0.5 * camera.fov) * f32(dimensions.y) / f32(dimensions.x),
+    // );
+    // let vp_origin = (camera.ws_position + forward * camera.near) - (0.5 * vp_size.x * right) - (0.5 * vp_size.y * up);
+    // let ws_origin = vp_origin + (uv.x * vp_size.x * right) + (uv.y * vp_size.y * up);
+    // let ws_direction = normalize(ws_origin - camera.ws_position);
+    //
+
+    let uv = (vec2<f32>(pos) + 0.5) / vec2<f32>(dimensions);
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0);
+
+    let ts_near = camera.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
+    let ws_near = ts_near.xyz / ts_near.w;
+
+    let ts_far = camera.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
+    let ws_far = ts_far.xyz / ts_far.w;
+
+    let ws_direction = normalize(ws_far - ws_near);
+    let ws_origin = ws_near;
 
     let ls_origin = (model.inv_transform * vec4(ws_origin, 1.0)).xyz;
     let ls_direction = normalize((model.inv_transform * vec4(ws_direction, 0.0)).xyz);
@@ -319,6 +353,7 @@ fn start_ray(pos: vec2<u32>) -> Ray {
     let t_start = max(0.0, t_near + 1e-7);
 
     var ray: Ray;
+    ray.ls_origin = ls_origin;
     ray.origin = ls_origin + t_start * ls_direction;
     ray.direction = ls_direction;
     ray.t_start = t_start;

@@ -3,6 +3,8 @@
 pub struct EnvironmentDataBuffer {
     pub sun_direction: glam::Vec3,
     pub shadow_bias: f32,
+    pub camera: CameraDataBuffer,
+    pub prev_camera: CameraDataBuffer,
 }
 
 #[repr(C)]
@@ -21,14 +23,17 @@ pub struct CameraDataBuffer {
 }
 
 impl CameraDataBuffer {
-    pub fn update(&mut self, camera: &crate::engine::Camera) {
-        self.view_proj = camera.view_proj.as_mat4().to_cols_array_2d();
-        self.inv_view_proj = camera.inv_view_proj.as_mat4().to_cols_array_2d();
-        self.ws_position = camera.position.as_vec3().to_array();
-        self.forward = camera.forward.as_vec3().to_array();
-        self.near = camera.near as f32;
-        self.far = camera.far as f32;
-        self.fov = camera.fov as f32;
+    pub fn from_camera(camera: &crate::engine::Camera) -> Self {
+        Self {
+            view_proj: camera.view_proj.as_mat4().to_cols_array_2d(),
+            inv_view_proj: camera.inv_view_proj.as_mat4().to_cols_array_2d(),
+            ws_position: camera.position.as_vec3().to_array(),
+            forward: camera.forward.as_vec3().to_array(),
+            near: camera.near as f32,
+            far: camera.far as f32,
+            fov: camera.fov as f32,
+            ..Default::default()
+        }
     }
 }
 

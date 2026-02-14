@@ -32,7 +32,7 @@ impl Camera {
             rotation: glam::dvec3(0.0, 0.0, 0.0),
             fov: 90.0 * (PI / 180.0),
             near: 0.01,
-            far: 1000.0,
+            far: 100.0,
             size,
             view_proj: glam::DMat4::IDENTITY,
             inv_view_proj: glam::DMat4::IDENTITY,
