@@ -49,40 +49,46 @@ struct FrameMetadata {
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
 @group(2) @binding(2) var<uniform> model: Model;
 
+// @group(3) @binding(3) var<
+
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
 const DDA_MAX_STEPS: u32 = 300u;
+const SKY_COLOR: vec3<f32> = vec3(0.5, 0.9, 1.5);
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
-    let ray = start_ray(in.id.xy);
+    let pos = vec2<i32>(in.id.xy);
+    let dimensions = textureDimensions(out_albedo).xy;
+    let texel_size = 1.0 / vec2<f32>(dimensions);
 
+    let ray = start_ray(in.id.xy);
     let res = raymarch(ray);
 
-    // var albedo = vec3(0.0);
-    var albedo = vec3(0.5, 0.9, 1.5);
-    var normal = vec3(0.0);
-    var depth = 0.0;
-    var shadow_factor = 0.0;
-    var velocity = vec2(0.);
+    if !res.hit {
+        textureStore(out_albedo, pos, vec4(SKY_COLOR, 0.0));
+        textureStore(out_normal, pos, vec4(0.0, 0.0, 0.0, 1.0));
+        textureStore(out_depth, pos, vec4(0.0, 0.0, 0.0, 1.0));
+        textureStore(out_velocity, pos, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
 
-    if res.hit {
-        albedo = palette_color(res.palette_index);
-        normal = normalize(model.normal_transform * res.normal);
+    let albedo = palette_color(res.palette_index);
+    let normal = normalize(model.normal_transform * res.surface_normal);
+
+        var shadow_ray_dir = normalize(environment.sun_direction);
+        let shadow_ray_origin = res.local_pos + environment.shadow_bias * res.hit_normal;
+        let shadow_factor = 0.0;
+        // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
+        // let in_shadow = false;
 
         let world_pos = model.transform * vec4<f32>(res.local_pos, 1.0);
 
-        depth = dot(world_pos.xyz - environment.camera.ws_position, environment.camera.forward);
+        var depth = dot(world_pos.xyz - environment.camera.ws_position, environment.camera.forward);
         depth = (depth - environment.camera.near) / (environment.camera.far - environment.camera.near);
 
-        if res.in_shadow {
-            shadow_factor = 1.0;
-        }
-
-        let dimensions = textureDimensions(out_albedo).xy;
-        let texel_size = 1.0 / vec2<f32>(dimensions);
 
         let clip_pos = environment.camera.view_proj * world_pos;
         let ndc = clip_pos.xy / clip_pos.w;
@@ -92,11 +98,7 @@ fn compute_main(in: ComputeIn) {
         let prev_ndc = prev_clip_pos.xy / prev_clip_pos.w;
         let prev_uv = prev_ndc * vec2(0.5, -0.5) + 0.5;
 
-        // velocity = (uv - environment.jitter * texel_size) - (prev_uv - environment.prev_jitter * texel_size);
-        velocity = uv - prev_uv;
-        // velocity -= environment.jitter * texel_size;
-        // velocity -= environment.prev_jitter * texel_size;
-    }
+        let velocity = uv - prev_uv;
 
     textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, shadow_factor));
     textureStore(out_normal, vec2<i32>(in.id.xy), vec4(normal, 1.0));
@@ -115,10 +117,9 @@ struct Ray {
 struct RaymarchResult {
     hit: bool,
     palette_index: u32,
-    normal: vec3<f32>,
-    t_total: f32,
+    surface_normal: vec3<f32>,
+    hit_normal: vec3<f32>,
     local_pos: vec3<f32>,
-    in_shadow: bool,
 }
 
 fn raymarch_shadow(ray: Ray) -> bool {
@@ -226,8 +227,10 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                     let palette_index = packed & 0x3ffu;
                     let normal_packed = packed >> 11u;
 
-                    let normal = decode_normal_octahedral(normal_packed);
+                    // this is the smooth per-voxel normal
+                    let surface_normal = decode_normal_octahedral(normal_packed);
 
+                    // this is the flat normal from the sign of the ray entry
                     let hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
 
                     // t_total is the total t-value traveled from the camera to the hit voxel
@@ -236,14 +239,7 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                     let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
                     let local_pos = ray.ls_origin + dir * t_total;
 
-                    // var shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
-                    var shadow_ray_dir = normalize(environment.sun_direction);
-                    let shadow_ray_origin = local_pos + environment.shadow_bias * hit_normal;
-
-                    // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
-                    let in_shadow = false;
-
-                    return RaymarchResult(true, palette_index, normal, t_total, local_pos, in_shadow);
+                    return RaymarchResult(true, palette_index, surface_normal, hit_normal, local_pos, );
                 }
 
                 prev_ray_length = brick_ray_length;
