@@ -1,121 +1,65 @@
-use anyhow::Result;
-use flate2::{read::ZlibDecoder, write::ZlibEncoder};
-use heck::ToSnakeCase;
-use loader::voxelize;
+use anyhow::{Context, Result};
+use loader::{MODEL_FILE_EXT, VoxelMetadata, load_voxel_header};
 use std::{
-    env, fs,
-    io::{self, Write},
-    path,
+    env,
+    fs::{self, File},
+    path::Path,
 };
 
 fn main() -> Result<()> {
-    let out_dir = env::var_os("OUT_DIR").unwrap();
-    let out_dir = path::Path::new(&out_dir);
+    println!("cargo::rerun-if-changed=assets/generated");
 
-    struct ModelSource {
-        name: String,
-        file: fs::File,
-    }
-    let mut sources = Vec::new();
-    let mut names = std::collections::HashSet::new();
-    let mut name_fallback_counter = 0;
-    for entry in fs::read_dir("assets/models")? {
+    let out_dir = env::var_os("OUT_DIR").context("OUT_DIR not set")?;
+    let out_dir = Path::new(&out_dir);
+
+    let mut models = Vec::new();
+    for entry in fs::read_dir("assets/generated")? {
         let path = entry?.path();
         if !path.is_file() {
             continue;
         }
         if path
             .extension()
-            .is_none_or(|e| !e.eq_ignore_ascii_case("glb"))
+            .is_none_or(|e| !e.eq_ignore_ascii_case(MODEL_FILE_EXT))
         {
             continue;
         }
-        let name = path
-            .file_stem()
-            .and_then(|stem| {
-                let mut name = stem.to_string_lossy().to_string();
-                name = name.to_snake_case().to_ascii_lowercase();
-                name = name.replace(|c: char| !c.is_alphanumeric(), "_");
-                while name.contains("__") {
-                    name = name.replace("__", "_");
-                }
-                if name.chars().next().map_or(false, |c| c.is_numeric()) {
-                    name.insert(0, '_');
-                }
-                if names.contains(&name) {
-                    None
-                } else {
-                    Some(name)
-                }
-            })
-            .unwrap_or_else(|| {
-                loop {
-                    let name = format!("model_{}", name_fallback_counter);
-                    name_fallback_counter += 1;
-                    if !names.contains(&name) {
-                        names.insert(name.clone());
-                        return name;
-                    }
-                }
-            });
+        let file = File::open(&path)?;
+        let reader = std::io::BufReader::new(file);
+        let mut decoder = flate2::read::ZlibDecoder::new(reader);
+        let meta = load_voxel_header(&mut decoder)?;
+        let path = Path::new("app")
+            .join(path)
+            .to_str()
+            .map(|p| String::from(p))
+            .context("error getting path")?;
 
-        let file = fs::File::open(path)?;
-        sources.push(ModelSource { name, file });
+        models.push((meta, path));
     }
 
-    let (device, queue) = {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+    generate_model_defs(&models, out_dir)?;
 
-        let mut features = wgpu::Features::default();
-        features |= wgpu::Features::TEXTURE_BINDING_ARRAY;
-        features |= wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+    Ok(())
+}
 
-        let mut limits = wgpu::Limits::default();
-        limits.max_sampled_textures_per_shader_stage = 128;
-        limits.max_buffer_size = 2 * 1024 * 1024 * 1024;
-        // limits.max_binding_array_elements_per_shader_stage = 406;
-        limits.max_binding_array_elements_per_shader_stage = 128;
-        limits.max_storage_textures_per_shader_stage = 6;
-        limits.max_compute_invocations_per_workgroup = 512;
-
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: features,
-            required_limits: limits,
-            ..Default::default()
-        }))
-    }?;
-
-    for src in &sources {
-        let mut reader = io::BufReader::new(&src.file);
-        let data = voxelize(&mut reader, &device, &queue, Some(src.name.clone()))?
-            .serialize(&device, &queue)?;
-
-        let path = out_dir.join(format!("{}.bin", &src.name));
-        let file = fs::File::create(&path)?;
-        let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
-        enc.write_all(&data)?;
-        enc.finish()?;
-    }
-
+fn generate_model_defs(sources: &[(VoxelMetadata, String)], out_dir: &Path) -> Result<()> {
     let model_idents = sources
         .iter()
-        .map(|src| quote::format_ident!("{}", &src.name));
+        .map(|src| quote::format_ident!("{}", &src.0.name));
 
     let model_meta_defs = sources.iter().map(|src| {
-        let name_ident = quote::format_ident!("{}", &src.name);
-        let name = &src.name;
-        let path = format!("{}.bin", src.name);
+        let name_ident = quote::format_ident!("{}", &src.0.name);
+        let name = &src.0.name;
+        let path = &src.1;
         quote::quote! {
             #name_ident: ModelEntry {
                 name: #name,
-                path: concat!(env!("OUT_DIR"), "/", #path),
+                path: #path,
             }
         }
     });
 
-    let code = quote::quote! {
+    let res = quote::quote! {
         mod models {
             use wgpu::util::DeviceExt;
             use loader::VoxelModel;
@@ -165,13 +109,11 @@ fn main() -> Result<()> {
         }
     };
 
-    let ast = syn::parse2(code).unwrap();
+    let ast = syn::parse2(res).unwrap();
     let formatted = prettyplease::unparse(&ast);
 
     let dest_path = out_dir.join("assets.rs");
     fs::write(&dest_path, formatted)?;
-
-    println!("cargo::rerun-if-changed=assets/models");
 
     Ok(())
 }

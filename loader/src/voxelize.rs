@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, Seek},
+    io::{BufRead, Read, Seek},
     time::Duration,
 };
 
@@ -20,6 +20,16 @@ pub fn voxelize<R: BufRead + Seek>(
     let scene = Scene::from_gltf(&gltf)?;
     let mut voxelizer = Voxelizer::new(device, scene.textures.len() as u32);
     voxelizer.load_gltf(device, queue, gltf, scene, name)
+}
+
+pub fn load_voxel_header<R: Read>(data: &mut R) -> Result<VoxelMetadata> {
+    let mut buf = [0; 4];
+    data.read_exact(&mut buf)?;
+    let header_length = bytemuck::cast_slice::<u8, u32>(&buf)[0] as usize;
+    let mut buf = vec![0; header_length as usize];
+    data.read_exact(&mut buf)?;
+    let header: VoxelFileHeader = serde_json::from_slice(&buf)?;
+    Ok(header.meta)
 }
 
 pub struct VoxelModel {

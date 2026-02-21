@@ -903,6 +903,7 @@ impl Renderer {
 
         // see build script
         let scene = MODELS.sponza.load(device, queue).unwrap();
+        // let scene = MODELS.sponza.load(device, queue).unwrap();
 
         let textures = Textures {
             gbuffer_albedo: None,
