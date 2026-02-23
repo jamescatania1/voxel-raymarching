@@ -106,6 +106,8 @@ struct Textures {
     gbuffer_velocity: Option<wgpu::Texture>,
     gbuffer_illumination: Option<wgpu::Texture>,
     gbuffer_acc_illumination: Option<SwapchainTexture>,
+    gbuffer_acc_illumination_history_len: Option<SwapchainTexture>,
+    // gbuffer_acc_illumination_moments: Option<SwapchainTexture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
     voxel_brickmap: wgpu::Texture,
@@ -434,7 +436,7 @@ impl Renderer {
                             binding: 0,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                access: wgpu::StorageTextureAccess::WriteOnly,
                                 format: wgpu::TextureFormat::Rgba16Float,
                                 view_dimension: wgpu::TextureViewDimension::D2,
                             },
@@ -444,7 +446,7 @@ impl Renderer {
                             binding: 1,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::WriteOnly,
+                                access: wgpu::StorageTextureAccess::ReadOnly,
                                 format: wgpu::TextureFormat::Rgba16Float,
                                 view_dimension: wgpu::TextureViewDimension::D2,
                             },
@@ -454,7 +456,7 @@ impl Renderer {
                             binding: 2,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                access: wgpu::StorageTextureAccess::WriteOnly,
                                 format: wgpu::TextureFormat::R32Uint,
                                 view_dimension: wgpu::TextureViewDimension::D2,
                             },
@@ -462,6 +464,46 @@ impl Renderer {
                         },
                         wgpu::BindGroupLayoutEntry {
                             binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                format: wgpu::TextureFormat::R32Uint,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                format: wgpu::TextureFormat::R32Uint,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                format: wgpu::TextureFormat::R32Uint,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 6,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                format: wgpu::TextureFormat::R32Float,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 7,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::StorageTexture {
                                 access: wgpu::StorageTextureAccess::ReadOnly,
@@ -840,6 +882,7 @@ impl Renderer {
             gbuffer_velocity: None,
             gbuffer_illumination: None,
             gbuffer_acc_illumination: None,
+            gbuffer_acc_illumination_history_len: None,
             deferred_output: None,
             out_color: None,
             voxel_brickmap: scene.data.tex_brickmap,
@@ -1223,6 +1266,27 @@ impl Renderer {
                 ..Default::default()
             });
 
+        self.textures.gbuffer_acc_illumination_history_len =
+            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_acc_illumination_history_len"),
+                size,
+                sample_count: 1,
+                format: wgpu::TextureFormat::R32Uint,
+                dimension: wgpu::TextureDimension::D2,
+                usage: wgpu::TextureUsages::STORAGE_BINDING,
+                mip_level_count: 1,
+                view_formats: &[],
+            }));
+        let view_acc_illumination_history_len = self
+            .textures
+            .gbuffer_acc_illumination_history_len
+            .as_ref()
+            .unwrap()
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("gbuffer_acc_illumination_history_len"),
+                ..Default::default()
+            });
+
         self.textures.deferred_output = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("deferred_output"),
             size,
@@ -1310,11 +1374,11 @@ impl Renderer {
                 entries: &[
                     SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: view_gbuffer_normal.both_reversed(),
+                        resource: view_gbuffer_normal.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 1,
-                        resource: view_gbuffer_depth.both_reversed(),
+                        resource: view_gbuffer_depth.both(),
                     },
                 ],
             },
@@ -1355,10 +1419,26 @@ impl Renderer {
                     },
                     SwapchainBindGroupEntry {
                         binding: 2,
-                        resource: view_gbuffer_normal.both_reversed(),
+                        resource: view_acc_illumination_history_len.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 3,
+                        resource: view_acc_illumination_history_len.both_reversed(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 4,
+                        resource: view_gbuffer_normal.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 5,
+                        resource: view_gbuffer_normal.both_reversed(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 6,
+                        resource: view_gbuffer_depth.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 7,
                         resource: view_gbuffer_depth.both_reversed(),
                     },
                 ],
@@ -1392,15 +1472,15 @@ impl Renderer {
                 entries: &[
                     SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: view_gbuffer_normal.both_reversed(),
+                        resource: view_gbuffer_normal.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 1,
-                        resource: view_gbuffer_depth.both_reversed(),
+                        resource: view_gbuffer_depth.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 2,
-                        resource: view_gbuffer_acc_illumination.both_reversed(),
+                        resource: view_gbuffer_acc_illumination.both(),
                     },
                 ],
             },
@@ -1432,15 +1512,15 @@ impl Renderer {
                 entries: &[
                     SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: view_out_color.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
                         resource: view_out_color.both_reversed(),
                     },
                     SwapchainBindGroupEntry {
+                        binding: 1,
+                        resource: view_out_color.both(),
+                    },
+                    SwapchainBindGroupEntry {
                         binding: 2,
-                        resource: view_gbuffer_depth.both_reversed(),
+                        resource: view_gbuffer_depth.both(),
                     },
                 ],
             },
@@ -1453,7 +1533,7 @@ impl Renderer {
                 entries: &[
                     SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: view_out_color.both_reversed(),
+                        resource: view_out_color.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 1,

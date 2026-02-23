@@ -92,7 +92,8 @@ fn compute_main(in: ComputeIn) {
 
     let noise = blue_noise(in.id.xy);
 
-    var ambient = trace_ambient(pos, noise, ls_pos, ls_hit_normal);
+    var ambient = 1.0;
+    // var ambient = trace_ambient(pos, noise, ls_pos, ls_hit_normal);
     var shadow = trace_shadow(pos, noise, ls_pos, ls_normal);
 
     textureStore(tex_out_illum, pos, vec4(shadow, ambient, 0.0, 1.0));
@@ -102,27 +103,8 @@ fn trace_ambient(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal:
     var ray: SparseRay;
     ray.origin = ls_pos + environment.shadow_bias * ls_normal;
 
-    let dir = rand_hemisphere_direction(noise.xy);
-    let n = ls_normal;
-    var tangent = vec3<f32>(0.0);
-    var bitangent = vec3<f32>(0.0);
-    if (n.z < 0.0) {
-        let a = 1.0 / (1.0 - n.z);
-        let b = n.x * n.y * a;
-        tangent = vec3(1.0 - n.x * n.x * a, -b, n.x);
-        bitangent = vec3(b, n.y * n.y * a - 1.0, -n.y);
-    }
-    else{
-        let a = 1.0 / (1.0 + n.z);
-        let b = -n.x * n.y * a;
-        tangent = vec3(1.0 - n.x * n.x * a, b, -n.x);
-        bitangent = vec3(b, 1.0 - n.y * n.y * a, -n.y);
-    }
-    ray.direction = normalize(tangent * dir.x + bitangent * dir.y + n * dir.z);
-
-    // let dir = normalize(noise.xyz) * 2.0 - 1.0;
-    // ray.direction = normalize(dir * sign(dot(hit.hit_normal, dir)));
-    // ray.direction = dir;
+    let dir = rand_hemisphere_direction(noise.xy, 1.0);
+    ray.direction = align_direction(dir, ls_normal);
 
     const MAX_DISTANCE_OCCLUSION: f32 = 0.0025;
     // const MAX_DISTANCE_OCCLUSION: f32 = 1.0;
@@ -138,17 +120,20 @@ fn trace_ambient(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal:
 }
 
 fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>) -> f32 {
-    let dir_offset = rand_hemisphere_direction(noise.xy) * environment.shadow_spread;
-
+    let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
+    var dir = rand_hemisphere_direction(noise.xy, environment.shadow_spread);
+    dir = align_direction(dir, light_dir);
+    
     var ray: SparseRay;
     ray.origin = ls_pos + environment.shadow_bias * ls_normal;
-    ray.direction = normalize(environment.sun_direction + dir_offset);
+    ray.direction = dir;
 
     let occluded = raymarch_shadow(ray);
     // let occluded = false;
     return select(1.0, 0.0, occluded);
 }
 
+// noise from https://github.com/electronicarts/fastnoise/blob/main/FastNoiseDesign.md
 fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
     const FRACT_PHI: f32 = 0.61803398875;
     const FRACT_SQRT_2: f32 = 0.41421356237;
@@ -165,16 +150,10 @@ fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
     );
     let noise = textureLoad(tex_noise, sample_pos, 0).rgb;
     return noise;
-
-    // let ctr = f32(frame.frame_id % 500);
-    // let noise_uv = (vec2<f32>(pos) + 0.5) / vec2<f32>(textureDimensions(tex_noise).xy);
-    // var noise = textureSampleLevel(tex_noise, sampler_noise, noise_uv, 0.0).rgb;
-    // noise = (noise + vec3(PHI, SQRT_2, SQRT_3) * ctr) % 1.0;
-    // return noise;
 }
 
-fn rand_hemisphere_direction(noise: vec2<f32>) -> vec3<f32> {
-    let xy = noise * 2.0 - 1.0;
+fn rand_hemisphere_direction(noise: vec2<f32>, spread: f32) -> vec3<f32> {
+    let xy = (noise * 2.0 - 1.0) * spread;
     let z = sqrt(max(0.0, 1.0 - dot(xy, xy)));
     return vec3(xy, z);
 }
@@ -341,21 +320,24 @@ fn primary_ray(uv: vec2<f32>) -> Ray {
     return ray;
 }
 
-// not using now, reconstruct ws pos from depth like this
-// let depth = dot(ws_pos - environment.camera.ws_position, environment.camera.forward);
-// fn reconstruct_ws_pos(depth: f32, uv: vec2<f32>) -> vec3<f32> {
-//     let ndc = vec2(uv.x, 1.0 - uv.y) * 2.0 - 1.0;
-
-//     let cs_target = vec4<f32>(ndc, 1.0, 1.0);
-//     let hs_target = environment.camera.inv_view_proj * cs_target;
-//     let ws_target = hs_target.xyz / hs_target.w;
-
-//     let dir = normalize(ws_target - environment.camera.ws_position);
-
-//     let t_total = depth / dot(dir, environment.camera.forward);
-//     return environment.camera.ws_position + (dir * t_total);
-// }
-
+// aligns dir to n's tangent space
+fn align_direction(dir: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var tangent = vec3<f32>(0.0);
+    var bitangent = vec3<f32>(0.0);
+    if (n.z < 0.0) {
+        let a = 1.0 / (1.0 - n.z);
+        let b = n.x * n.y * a;
+        tangent = vec3(1.0 - n.x * n.x * a, -b, n.x);
+        bitangent = vec3(b, n.y * n.y * a - 1.0, -n.y);
+    }
+    else{
+        let a = 1.0 / (1.0 + n.z);
+        let b = -n.x * n.y * a;
+        tangent = vec3(1.0 - n.x * n.x * a, b, -n.x);
+        bitangent = vec3(b, 1.0 - n.y * n.y * a, -n.y);
+    }
+    return normalize(tangent * dir.x + bitangent * dir.y + n * dir.z);
+}
 
 struct Voxel {
     ws_normal: vec3<f32>,

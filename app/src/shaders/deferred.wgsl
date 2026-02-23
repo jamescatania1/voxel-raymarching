@@ -84,7 +84,7 @@ fn compute_main(in: ComputeIn) {
     surface.ws_normal = voxel.ws_normal;
     surface.albedo = albedo;
     surface.metallic = voxel.metallic;
-    surface.roughness = voxel.roughness * voxel.roughness;
+    surface.roughness = pow(voxel.roughness, 4.0);
     surface.shadow = shadow;
     surface.ao = radiance;
     var color = pbr(surface);
@@ -93,8 +93,7 @@ fn compute_main(in: ComputeIn) {
     // color += vec3(shadow);
 
     // if illumination.b > 0.5 {
-    //     color *= 0.0000001;
-    //     color += vec3(1.0, 0.0, 0.0);
+    //     color = color + vec3(0.2, 0.0, 0.0);
     // }
 
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
@@ -116,7 +115,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let L = normalize(environment.sun_direction);
     let H = normalize(V + L);
 
-    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.3;
+    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.005;
     const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 0.8;
 
     var direct: vec3<f32>;

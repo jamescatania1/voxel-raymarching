@@ -43,13 +43,21 @@ pub trait DeviceSwapExt {
 
 impl DeviceSwapExt for wgpu::Device {
     fn create_texture_swap(&self, desc: &wgpu::TextureDescriptor<'_>) -> SwapchainTexture {
-        SwapchainTexture {
-            a: self.create_texture(desc),
-            b: self.create_texture(desc),
-        }
+        let label_a = format!("{}_a", desc.label.unwrap_or_default());
+        let a = self.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&label_a),
+            ..*desc
+        });
+        let label_b = format!("{}_b", desc.label.unwrap_or_default());
+        let b = self.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&label_b),
+            ..*desc
+        });
+        SwapchainTexture { a, b }
     }
 
     fn create_bind_group_swap(&self, desc: &SwapchainBindGroupDescriptor) -> SwapchainBindGroup {
+        let label_a = format!("{}_a", desc.label.unwrap_or_default());
         let entries_a = desc
             .entries
             .iter()
@@ -62,10 +70,11 @@ impl DeviceSwapExt for wgpu::Device {
             })
             .collect::<Vec<wgpu::BindGroupEntry>>();
         let a = wgpu::BindGroupDescriptor {
-            label: desc.label.clone(),
+            label: Some(&label_a),
             layout: desc.layout,
             entries: &entries_a,
         };
+        let label_b = format!("{}_b", desc.label.unwrap_or_default());
         let entries_b = desc
             .entries
             .iter()
@@ -78,7 +87,7 @@ impl DeviceSwapExt for wgpu::Device {
             })
             .collect::<Vec<wgpu::BindGroupEntry>>();
         let b = wgpu::BindGroupDescriptor {
-            label: desc.label.clone(),
+            label: Some(&label_b),
             layout: desc.layout,
             entries: &entries_b,
         };
@@ -91,16 +100,23 @@ impl DeviceSwapExt for wgpu::Device {
 
 impl SwapchainTexture {
     pub fn create_view(&self, desc: &wgpu::TextureViewDescriptor) -> SwapchainTextureView {
-        SwapchainTextureView {
-            a: self.a.create_view(desc),
-            b: self.b.create_view(desc),
-        }
+        let label_a = format!("{}_a", desc.label.unwrap_or_default());
+        let a = self.a.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&label_a),
+            ..*desc
+        });
+        let label_b = format!("{}_b", desc.label.unwrap_or_default());
+        let b = self.b.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&label_b),
+            ..*desc
+        });
+        SwapchainTextureView { a, b }
     }
 }
 
 impl SwapchainTextureView {
     // Set's this texture's primary swap on even frames, and its secondary swap on odd frames
-    pub fn both(&self) -> SwapchainBindingResource {
+    pub fn both<'a>(&'a self) -> SwapchainBindingResource<'a> {
         SwapchainBindingResource::Swap(
             wgpu::BindingResource::TextureView(&self.a),
             wgpu::BindingResource::TextureView(&self.b),
@@ -108,7 +124,7 @@ impl SwapchainTextureView {
     }
 
     // Set's this texture's secondary swap on even frames, and its primary swap on odd frames
-    pub fn both_reversed(&self) -> SwapchainBindingResource {
+    pub fn both_reversed<'a>(&'a self) -> SwapchainBindingResource<'a> {
         SwapchainBindingResource::Swap(
             wgpu::BindingResource::TextureView(&self.b),
             wgpu::BindingResource::TextureView(&self.a),

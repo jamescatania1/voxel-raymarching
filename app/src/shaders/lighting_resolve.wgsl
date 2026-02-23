@@ -2,10 +2,14 @@
 @group(0) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_cur_illum: texture_storage_2d<rgba16float, read>;
 
-@group(1) @binding(0) var tex_acc_illum: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(1) var tex_out_illum: texture_storage_2d<rgba16float, write>;
-@group(1) @binding(2) var tex_normal: texture_storage_2d<r32uint, read>;
-@group(1) @binding(3) var tex_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(1) var tex_acc_illum: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(2) var tex_out_history_len: texture_storage_2d<r32uint, write>;
+@group(1) @binding(3) var tex_acc_history_len: texture_storage_2d<r32uint, read>;
+@group(1) @binding(4) var tex_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(5) var tex_prev_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(6) var tex_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(7) var tex_prev_depth: texture_storage_2d<r32float, read>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -49,119 +53,198 @@ struct ComputeIn {
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
-    resolve_illum(in);
-}
+    let cur_pos = vec2<i32>(in.id.xy);
+    let cur_color = textureLoad(tex_cur_illum, cur_pos).rg;
+    var cur_moments: vec2<f32>;
+    cur_moments.r = cur_color.r;
+    cur_moments.g = cur_moments.r * cur_moments.r;
+    
+    let acc = reproject(cur_pos);
 
-fn resolve_illum(in: ComputeIn) {
-    let dimensions = vec2<i32>(textureDimensions(tex_cur_illum).xy);
-    let pos = vec2<i32>(in.id.xy);
-    
-    let texel_size = 1.0 / vec2<f32>(dimensions);
-    let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-    
-    let velocity = textureLoad(tex_velocity, pos).rg;
-    let acc_uv = uv - velocity;
-    let acc_pos = vec2<i32>(acc_uv * vec2<f32>(dimensions));
-    
-    let cur = textureLoad(tex_cur_illum, pos).rgb;
-    var history_length = 1u;
+    var res_color: vec2<f32>;
+    var res_moments: vec2<f32>;
+    var history_len: u32;
 
-    var res = cur;
-    
-    if is_reprojection_valid(pos, acc_pos, dimensions) {
-        let acc_pos = vec2<i32>(acc_uv * vec2<f32>(dimensions));
+    if acc.reject_history {
+        res_color = cur_color;
+        res_moments = cur_moments;
+        history_len = 1u;
+    } 
+    if !acc.reject_history {
+        history_len = min(32u, acc.history_len + 1u);
         
-        // let acc = sample_catmull_rom_5(acc_uv, vec2<f32>(dimensions));
-        let acc = textureLoad(tex_acc_illum, acc_pos).rgb;
-        
-        let alpha = 0.01;
+        // TODO add clamping parameters to customize each alpha
+        let alpha_moments = 1.0 / f32(history_len);
+        // res_moments 
 
-        res = mix(acc, cur, alpha);
-        res.g = 0.0;
-    } else {
-        res.g = 1.0;
+        let alpha_color = 1.0 / f32(history_len);
+        res_color = mix(acc.color, cur_color, alpha_color);
     }
- 
-    textureStore(tex_out_illum, pos, vec4<f32>(res, 1.));
+    
+    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, 0.0, 1.0));
+    textureStore(tex_out_history_len, cur_pos, vec4<u32>(history_len, 0, 0, 0));
 }
 
-fn is_reprojection_valid(pos: vec2<i32>, acc_pos: vec2<i32>, dimensions: vec2<i32>) -> bool {
-    if any(acc_pos < vec2(0)) || any(acc_pos >= dimensions) {
+struct ReprojectResult {
+    reject_history: bool,
+    history_len: u32,
+    color: vec2<f32>,
+    moments: vec2<f32>,
+}
+
+fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
+    let dimensions = vec2<i32>(textureDimensions(tex_cur_illum).xy);
+    let texel_size = 1.0 / vec2<f32>(dimensions);
+
+    // let cur_jitter = vec2(0.0);
+    // let acc_jitter = vec2(0.0);
+    let cur_jitter = texel_size * select(vec2(0.0), environment.camera.jitter - 0.5, frame.taa_enabled != 0u);
+    let acc_jitter = texel_size * select(vec2(0.0), environment.prev_camera.jitter - 0.5, frame.taa_enabled != 0u);
+        
+    let cur_uv = (vec2<f32>(cur_pos) + 0.5) * texel_size;
+
+    let cur_depth = textureLoad(tex_depth, cur_pos).r;
+    let cur_packed = textureLoad(tex_normal, cur_pos).r;
+    let cur = gather_surface(cur_uv + cur_jitter, environment.camera.inv_view_proj, cur_depth, cur_packed);
+
+    let velocity = textureLoad(tex_velocity, cur_pos).rg;
+
+    let acc_uv = cur_uv - velocity;
+    let acc_pos = acc_uv * vec2<f32>(dimensions);
+    
+    var res: ReprojectResult;
+    res.reject_history = true;
+    res.history_len = 0u;
+    res.color = vec2(0.0);
+    res.moments = vec2(0.0);
+    {
+        // start with 2x2 bilinear filter
+
+        const BILINEAR_OFFSET: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
+            vec2<i32>(0, 0),
+            vec2<i32>(1, 0),
+            vec2<i32>(0, 1),
+            vec2<i32>(1, 1),
+        );
+        
+        let f = fract(acc_pos - 0.5);
+        let w = array<f32, 4>(
+            (1.0 - f.x) * (1.0 - f.y),
+            f.x * (1.0 - f.y),
+            (1.0 - f.x) * f.y,
+            f.x * f.y,
+        );
+
+        var w_sum = 0.0;
+        var acc_sum = vec2(0.0);
+        var acc_moments = vec2(0.0);
+    
+        for (var i = 0u; i < 4u; i++) {
+            let offset = vec2<f32>(BILINEAR_OFFSET[i]);
+    
+            let sample_pos = acc_pos + offset - 0.5;
+            let sample_texel = vec2<i32>(floor(sample_pos));
+            let sample_uv =  (vec2<f32>(sample_texel) + 0.5) * texel_size;
+    
+            if any(sample_pos < vec2(0.0)) || any(sample_pos >= vec2<f32>(dimensions)) {
+                continue;
+            }
+        
+            let acc_depth = textureLoad(tex_prev_depth, sample_texel).r;
+            let acc_packed = textureLoad(tex_prev_normal, sample_texel).r;
+            let acc = gather_surface(sample_uv + acc_jitter, environment.prev_camera.inv_view_proj, acc_depth, acc_packed);
+    
+            if is_reprojection_valid(cur, acc) {
+                let weight = w[i];
+
+                let val = textureLoad(tex_acc_illum, sample_texel);
+
+                acc_sum += weight * val.rg;
+                acc_moments += weight * val.ba;
+                w_sum += weight;
+            }    
+        }
+        
+        if w_sum > 0.001 {
+            res.reject_history = false;
+            res.color = acc_sum / w_sum; 
+            res.moments = acc_moments / w_sum;
+        }
+    }
+    // if res.reject_history {
+    //     // now we fall back to cross-bilateral
+
+    //     var w_sum = 0.0;
+    //     var acc_sum = vec4(0.0);
+
+    //     for (var y = -1; y <= 1; y++) {
+    //         for (var x = -1; x <= 1; x++) {
+    //             let sample_pos = acc_pos + vec2(f32(x), f32(y)) - 0.5;
+    //             let sample_texel = vec2<i32>(sample_pos);
+    //             let sample_uv = (vec2<f32>(sample_texel) - 0.5) * texel_size;
+
+    //             if any(sample_pos < vec2(0.0)) || any(sample_pos >= vec2<f32>(dimensions)) {
+    //                 continue;
+    //             }
+            
+    //             let acc_depth = textureLoad(tex_prev_depth, sample_texel).r;
+    //             let acc_packed = textureLoad(tex_prev_normal, sample_texel).r;
+    //             let acc = gather_surface(sample_uv + acc_jitter, environment.prev_camera.inv_view_proj, acc_depth, acc_packed);
+        
+    //             if is_reprojection_valid(cur, acc) {
+    //                 acc_sum += textureLoad(tex_acc_illum, sample_texel, 0);
+    //                 w_sum += 1.0;
+    //             }
+    //         }
+    //     }
+
+    //     if (w_sum > 0.001) {
+    //         res.reject_history = false;
+    //         res.color = acc_sum / w_sum;
+    //     }
+    // }
+
+    if !res.reject_history {
+        res.history_len = textureLoad(tex_acc_history_len, vec2<i32>(acc_pos)).r;
+    }
+
+    return res;
+}
+
+fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
+    let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_hit_normal));
+    if plane_distance > 0.3 {
         return false;
     }
 
-    // let texel_size = 1.0 / vec2<f32>(dimensions);
-
-    // let cur = gather_surface(pos, texel_size);
-    // let acc = gather_surface(acc_pos, texel_size);
-
-    // let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_normal));
-    // if plane_distance > 0.1 {
-    //     return false;
-    // }
+    if pow(abs(dot(cur.ws_hit_normal, acc.ws_hit_normal)), 2.0) < 0.8 {
+        return false;
+    }
     
     return true;
 }
 
-// 5-tap approximation of of Catmull-Rom filter
-// very similar results to 9-tap
-// from https://advances.realtimerendering.com/s2016/Filmic%20SMAA%20v7.pptx
-// fn sample_catmull_rom_5(uv: vec2<f32>, dimensions: vec2<f32>) -> vec3<f32> {
-//     let texel_size = 1.0 / dimensions;
-//     let pos = uv * dimensions;
-//     let center_pos = floor(pos - 0.5) + 0.5;
-//     let f = pos - center_pos;
-//     let f2 = f * f;
-//     let f3 = f * f2;
-
-//     const SHARPNESS: f32 = 0.4;
-//     let c = SHARPNESS;
-//     let w0 = -c * f3 + 2.0 * c * f2 - c * f;
-//     let w1 = (2.0 - c) * f3 - (3.0 - c) * f2 + 1.0;
-//     let w2 = -(2.0 - c) * f3 + (3.0 - 2.0 * c) * f2 + c * f;
-//     let w3 = c * f3 - c * f2;
-
-//     let w12 = w1 + w2;
-//     let tc12 = texel_size * (center_pos + w2 / w12);
-//     let center_color = textureSampleLevel(tex_acc_illum, main_sampler, tc12.xy, 0.0).rgb;
-
-//     let tc0 = texel_size * (center_pos - 1.0);
-//     let tc3 = texel_size * (center_pos + 2.0);
-
-//     var color = vec4(0.0);
-//     color += vec4(textureSampleLevel(tex_acc_illum, main_sampler, vec2(tc12.x, tc0.y), 0.0).rgb, 1.0) * (w12.x * w0.y);
-//     color += vec4(textureSampleLevel(tex_acc_illum, main_sampler, vec2(tc0.x, tc12.y), 0.0).rgb, 1.0) * (w0.x * w12.y);
-//     color += vec4(center_color, 1.0) * (w12.x * w12.y);
-//     color += vec4(textureSampleLevel(tex_acc_illum, main_sampler, vec2(tc3.x, tc12.y), 0.0).rgb, 1.0) * (w3.x * w12.y);
-//     color += vec4(textureSampleLevel(tex_acc_illum, main_sampler, vec2(tc12.x, tc3.y), 0.0).rgb, 1.0) * (w12.x * w3.y);
-
-//     let res = color.rgb / color.a;
-//     return max(res, vec3(0.0));
-// }
-
-
 struct SurfaceData {
     ws_pos: vec3<f32>,
     ws_normal: vec3<f32>,
+    ws_hit_normal: vec3<f32>,
 }
 
-fn gather_surface(pos: vec2<i32>, texel_size: vec2<f32>) -> SurfaceData {
-    let depth = textureLoad(tex_depth, pos).r;
-    let packed = textureLoad(tex_normal, pos).r;
-
-    let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
-
-    let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
+fn gather_surface(uv: vec2<f32>, inv_view_proj: mat4x4<f32>, depth: f32, packed: u32) -> SurfaceData {
+    let ray = primary_ray(uv, inv_view_proj);
     
     let voxel = unpack_voxel(packed);
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
 
+    let ls_hit_normal = normalize(-vec3<f32>(sign(ray.direction)) * vec3<f32>(voxel.hit_mask));
+    let ws_hit_normal = normalize(model.normal_transform * ls_hit_normal);
+
     var res: SurfaceData;
     res.ws_pos = ws_pos;
     res.ws_normal = voxel.ws_normal;
+    res.ws_hit_normal = ws_hit_normal;
     return res;
 }
 
@@ -170,13 +253,13 @@ struct Ray {
     direction: vec3<f32>,
 };
 
-fn primary_ray(uv: vec2<f32>) -> Ray {
+fn primary_ray(uv: vec2<f32>, inv_view_proj: mat4x4<f32>) -> Ray {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0);
 
-    let ts_near = environment.camera.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
+    let ts_near = inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
     let ws_near = ts_near.xyz / ts_near.w;
 
-    let ts_far = environment.camera.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
+    let ts_far = inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
     let ws_far = ts_far.xyz / ts_far.w;
 
     let ws_direction = normalize(ws_far - ws_near);
@@ -215,8 +298,6 @@ fn decode_hit_mask(packed: u32) -> vec3<bool> {
     return vec3<bool>(mask);
 }
 
-/// decodes world space normal from lower 21 bits of u32
-// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
 fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
 	let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
 	let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;

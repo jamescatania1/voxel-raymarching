@@ -54,7 +54,7 @@ impl Ui {
             state: UiState {
                 render_scale: 0.5,
                 shadow_bias: 0.0005,
-                shadow_spread: 0.015,
+                shadow_spread: 0.05,
                 filter_shadows: true,
                 shadow_filter_radius: 7.0,
                 ambient_ray_max_distance: 10,
@@ -213,7 +213,10 @@ impl Ui {
                         ui.end_row();
 
                         ui.label("Shadow Spread");
-                        ui.add(egui::Slider::new(&mut self.state.shadow_spread, 0.0..=0.05));
+                        ui.add(
+                            egui::Slider::new(&mut self.state.shadow_spread, 0.0..=1.0)
+                                .logarithmic(true),
+                        );
                         ui.end_row();
 
                         ui.label("Filter Shadows");

@@ -111,7 +111,7 @@ impl State {
         limits.max_sampled_textures_per_shader_stage = 128;
         // limits.max_binding_array_elements_per_shader_stage = 406;
         limits.max_binding_array_elements_per_shader_stage = 128;
-        limits.max_storage_textures_per_shader_stage = 6;
+        limits.max_storage_textures_per_shader_stage = 8;
         limits.max_compute_invocations_per_workgroup = 512;
 
         let (device, queue) = adapter
