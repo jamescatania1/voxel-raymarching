@@ -1,12 +1,9 @@
 [workspace]
-members = ["app", "loader"]
+members = ["app", "generate"]
 default-members = ["app"]
 resolver = "2"
 
 [profile.dev.package."*"]
-opt-level = 3
-
-[profile.dev.package.loader]
 opt-level = 3
 
 [profile.release]

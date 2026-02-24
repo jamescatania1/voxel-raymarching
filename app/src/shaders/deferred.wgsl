@@ -9,6 +9,7 @@
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
 @group(2) @binding(2) var tex_noise: texture_2d<f32>;
+@group(2) @binding(3) var tex_skybox: texture_cube<f32>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -20,6 +21,7 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    debug_view: u32,
 }
 struct Camera {
 	view_proj: mat4x4<f32>,
@@ -61,6 +63,15 @@ fn compute_main(in: ComputeIn) {
 
     let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
+    let depth = textureLoad(tex_depth, pos).r;
+    if depth < 0.0 {
+        var sky = textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+        // sky = pow(sky, vec3(1.0) / 2.2);
+        textureStore(out_color, vec2<i32>(in.id.xy), vec4(sky, 1.0));
+        return;
+    }
+
+    let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
     let voxel = unpack_voxel(packed);
 
@@ -68,13 +79,9 @@ fn compute_main(in: ComputeIn) {
 
     let albedo_sample = textureLoad(tex_albedo, pos);
     let albedo = albedo_sample.rgb;
-    // let illumination = gather_illumination(pos, noise);
     let illumination = textureLoad(tex_illumination, pos, 0);
     let shadow = illumination.r;
-    let radiance = illumination.g;
-
-    let depth = textureLoad(tex_depth, pos).r;
-    let velocity = textureLoad(tex_velocity, pos).rg;
+    let ambient = illumination.g;
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
@@ -84,10 +91,38 @@ fn compute_main(in: ComputeIn) {
     surface.ws_normal = voxel.ws_normal;
     surface.albedo = albedo;
     surface.metallic = voxel.metallic;
-    surface.roughness = pow(voxel.roughness, 4.0);
+    surface.roughness = voxel.roughness;
     surface.shadow = shadow;
-    surface.ao = radiance;
+    surface.ao = ambient;
     var color = pbr(surface);
+
+    if environment.debug_view != 0u {
+        color *= 0.00001;
+        switch environment.debug_view {
+            case 1u: {
+                color += albedo;
+            }
+            case 2u {
+                color += depth * 0.005;
+            }
+            case 3u {
+                // todo
+            }
+            case 4u {
+                color += voxel.ws_normal;
+            }
+            case 5u {
+                color += vec3(shadow);
+            }
+            case 6u {
+                color += vec3(ambient);
+            }
+            case 7u {
+                color += vec3(abs(velocity), 0.0);
+            }
+            default {}
+        }
+    }
 
     // color *= 0.000001;
     // color += vec3(shadow);
@@ -115,8 +150,8 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let L = normalize(environment.sun_direction);
     let H = normalize(V + L);
 
-    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.005;
-    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 0.8;
+    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.1;
+    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 5.8;
 
     var direct: vec3<f32>;
     {
@@ -187,9 +222,6 @@ fn gather_illumination(pos: vec2<i32>, noise: vec3<f32>) -> vec3<f32> {
     if environment.filter_shadows == 0u {
         return textureLoad(tex_illumination, pos, 0).rgb;
     } else {
-        // let lighting = textureLoad(tex_illumination, pos, 0).rgb;
-        // let shadow = filter_spatial(uv, texel_size, noise).value.r;
-        // return vec3(shadow, lighting.gb);
         return filter_spatial(uv, texel_size, noise).value;
     }
 }
@@ -248,6 +280,7 @@ fn filter_spatial(uv: vec2<f32>, texel_size: vec2<f32>, noise: vec3<f32>) -> Fil
 
 struct Ray {
     ls_origin: vec3<f32>,
+    ws_direction: vec3<f32>,
     direction: vec3<f32>,
 };
 
@@ -267,6 +300,7 @@ fn primary_ray(uv: vec2<f32>) -> Ray {
     let ls_direction = normalize((model.inv_transform * vec4(ws_direction, 0.0)).xyz);
 
     var ray: Ray;
+    ray.ws_direction = ws_direction;
     ray.ls_origin = ls_origin;
     ray.direction = ls_direction;
     return ray;

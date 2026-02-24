@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use loader::{MODEL_FILE_EXT, VoxelMetadata, load_voxel_header};
+use generate::{MODEL_FILE_EXT, VoxelMetadata, load_voxel_header};
 use std::{
     env,
     fs::{self, File},
@@ -62,7 +62,7 @@ fn generate_model_defs(sources: &[(VoxelMetadata, String)], out_dir: &Path) -> R
     let res = quote::quote! {
         mod models {
             use wgpu::util::DeviceExt;
-            use loader::VoxelModel;
+            use generate::VoxelModel;
             use std::io::Read;
 
             /// Atlas of all the available models in the runtime.

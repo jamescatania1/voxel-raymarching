@@ -1,6 +1,6 @@
 use std::{f64::consts::PI, time::Duration};
 
-use crate::{SizedWindow, models, ui::renderer::UIRenderer};
+use crate::{SizedWindow, ui::renderer::UIRenderer};
 
 pub struct Ui {
     pub state: UiState,
@@ -37,10 +37,24 @@ pub struct UiState {
     pub shadow_filter_radius: f32,
     pub voxel_normal_factor: f32,
     pub ambient_ray_max_distance: u32,
+    pub view: DebugView,
     pub fxaa: bool,
     pub taa: bool,
     pub limit_fps: bool,
     pub max_fps: u32,
+}
+
+#[derive(Debug, PartialEq, Default, Copy, Clone)]
+pub enum DebugView {
+    #[default]
+    Composite = 0,
+    Albedo = 1,
+    Depth = 2,
+    HitNormal = 3,
+    SurfaceNormal = 4,
+    Shadow = 5,
+    Ambient = 6,
+    Velocity = 7,
 }
 
 impl Ui {
@@ -127,7 +141,7 @@ impl Ui {
                         if ui.button("Reload Scene").clicked() {
                             let src = std::include_bytes!("../../assets/models/sponza.glb");
                             let mut src = std::io::BufReader::new(std::io::Cursor::new(src));
-                            loader::voxelize(&mut src, ctx.device, ctx.queue, None).unwrap();
+                            generate::voxelize(&mut src, ctx.device, ctx.queue, None).unwrap();
                         }
                         ui.end_row();
 
@@ -156,6 +170,53 @@ impl Ui {
 
                         ui.label("TAA");
                         ui.checkbox(&mut self.state.taa, "");
+                        ui.end_row();
+
+                        ui.label("View");
+                        egui::ComboBox::from_id_salt(0)
+                            .selected_text(format!("{:?}", self.state.view))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::Composite,
+                                    "Composite",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::Depth,
+                                    "Depth",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::Albedo,
+                                    "Albedo",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::HitNormal,
+                                    "Hit normal",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::SurfaceNormal,
+                                    "Surface normal",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::Ambient,
+                                    "Ambient",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::Shadow,
+                                    "Shadow",
+                                );
+                                ui.selectable_value(
+                                    &mut self.state.view,
+                                    DebugView::Velocity,
+                                    "Velocity",
+                                );
+                            });
                         ui.end_row();
 
                         ui.end_row();

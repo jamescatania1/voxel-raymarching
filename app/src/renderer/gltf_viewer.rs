@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use loader::gltf::{Gltf, Scene};
+use generate::gltf::{Gltf, Scene};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -55,10 +55,10 @@ impl ModelViewer {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: match tex.encoding {
-                        loader::gltf::scene::TextureEncoding::Linear => {
+                        generate::gltf::scene::TextureEncoding::Linear => {
                             wgpu::TextureFormat::Rgba8Unorm
                         }
-                        loader::gltf::scene::TextureEncoding::Srgb => {
+                        generate::gltf::scene::TextureEncoding::Srgb => {
                             wgpu::TextureFormat::Rgba8UnormSrgb
                         }
                     },
@@ -159,7 +159,7 @@ impl ModelViewer {
                             tangent_buffer,
                             uv_buffer,
                             index_format: match p.indices.component_type {
-                                loader::gltf::schema::ComponentType::UnsignedShort => {
+                                generate::gltf::schema::ComponentType::UnsignedShort => {
                                     wgpu::IndexFormat::Uint16
                                 }
                                 _ => wgpu::IndexFormat::Uint32,

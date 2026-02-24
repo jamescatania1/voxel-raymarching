@@ -92,8 +92,8 @@ fn compute_main(in: ComputeIn) {
 
     let noise = blue_noise(in.id.xy);
 
-    var ambient = 1.0;
-    // var ambient = trace_ambient(pos, noise, ls_pos, ls_hit_normal);
+    // var ambient = 1.0;
+    var ambient = trace_ambient(pos, noise, ls_pos, ls_hit_normal);
     var shadow = trace_shadow(pos, noise, ls_pos, ls_normal);
 
     textureStore(tex_out_illum, pos, vec4(shadow, ambient, 0.0, 1.0));
@@ -106,7 +106,7 @@ fn trace_ambient(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal:
     let dir = rand_hemisphere_direction(noise.xy, 1.0);
     ray.direction = align_direction(dir, ls_normal);
 
-    const MAX_DISTANCE_OCCLUSION: f32 = 0.0025;
+    const MAX_DISTANCE_OCCLUSION: f32 = 0.025;
     // const MAX_DISTANCE_OCCLUSION: f32 = 1.0;
     var res = raymarch_sparse(ray, environment.max_ambient_distance);
     if res.hit {

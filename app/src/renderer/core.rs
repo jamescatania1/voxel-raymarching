@@ -610,6 +610,16 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             }),
             taa_input: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -890,6 +900,10 @@ impl Renderer {
             noise_uniform_gauss: noise::noise_uniform_gauss(device, queue).unwrap(),
         };
 
+        let src = std::fs::File::open("app/assets/sky.hdr").unwrap();
+        let src = std::io::BufReader::new(src);
+        let tex_skybox = generate::generate_lighting(src, &device, &queue).unwrap();
+
         let samplers = Samplers {
             linear: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("linear"),
@@ -1098,6 +1112,17 @@ impl Renderer {
                                 },
                             ),
                         ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&tex_skybox.create_view(
+                            &wgpu::TextureViewDescriptor {
+                                label: Some("skybox"),
+                                dimension: Some(wgpu::TextureViewDimension::Cube),
+                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                                ..Default::default()
+                            },
+                        )),
                     },
                 ],
             }),
@@ -1584,7 +1609,8 @@ impl Renderer {
                     shadow_filter_radius: ctx.ui.state.shadow_filter_radius,
                     max_ambient_distance: ctx.ui.state.ambient_ray_max_distance,
                     voxel_normal_factor: ctx.ui.state.voxel_normal_factor,
-                    pad: [0.0; 3],
+                    debug_view: ctx.ui.state.view as u32,
+                    pad: [0.0; 2],
                 }]),
             );
 
@@ -1735,35 +1761,6 @@ impl Renderer {
             if let Some(results) = timing.gather_results() {
                 ctx.ui.state.pass_avg = results;
             }
-            // timing
-            //     .result_buffer
-            //     .slice(..)
-            //     .map_async(wgpu::MapMode::Read, |_| {
-            //         println!("hi");
-            //     });
-
-            // ctx.device
-            //     .poll(wgpu::PollType::Wait {
-            //         submission_index: None,
-            //         timeout: Some(Duration::from_secs(5)),
-            //     })
-            //     .unwrap();
-
-            // let view = timing.result_buffer.get_mapped_range(..);
-            // let timestamps: &[u64] = bytemuck::cast_slice(&*view);
-
-            // let time_raymarch = Duration::from_nanos(timestamps[1] - timestamps[0]);
-            // let time_deferred = Duration::from_nanos(timestamps[3] - timestamps[2]);
-            // let time_post_fx = Duration::from_nanos(timestamps[5] - timestamps[4]);
-
-            // ctx.ui.state.pass_avg = vec![
-            //     ("Raymarch".into(), time_raymarch),
-            //     ("Deferred".into(), time_deferred),
-            //     ("Post FX".into(), time_post_fx),
-            // ];
-
-            // drop(view);
-            // timing.result_buffer.unmap();
         }
 
         self.frame_id = self.frame_id.wrapping_add(1);

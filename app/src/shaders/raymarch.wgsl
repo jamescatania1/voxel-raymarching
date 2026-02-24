@@ -62,7 +62,6 @@ struct ComputeIn {
 }
 
 const DDA_MAX_STEPS: u32 = 300u;
-const SKY_COLOR: vec3<f32> = vec3(0.5, 0.9, 1.5);
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
@@ -93,7 +92,7 @@ fn trace_scene(pos: vec2<i32>) -> SceneResult {
 
 	if !ray.hit {
 		var res: SceneResult;
-		res.albedo = SKY_COLOR;
+		res.albedo = vec3(1.0, 0.0, 0.0);
 		res.normal = 0u;
 		res.depth = -1.0;
 		res.velocity = vec2(0.0);

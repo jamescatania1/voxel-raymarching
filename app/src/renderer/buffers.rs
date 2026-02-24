@@ -10,7 +10,8 @@ pub struct EnvironmentDataBuffer {
     pub shadow_filter_radius: f32,
     pub max_ambient_distance: u32,
     pub voxel_normal_factor: f32,
-    pub pad: [f32; 3],
+    pub debug_view: u32,
+    pub pad: [f32; 2],
 }
 
 #[repr(C)]

@@ -117,6 +117,11 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     res.history_len = 0u;
     res.color = vec2(0.0);
     res.moments = vec2(0.0);
+
+    if cur.is_sky {
+        return res;
+    }
+
     {
         // start with 2x2 bilinear filter
 
@@ -212,6 +217,10 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 }
 
 fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
+    if acc.is_sky {
+        return false;
+    }
+
     let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_hit_normal));
     if plane_distance > 0.3 {
         return false;
@@ -225,12 +234,19 @@ fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
 }
 
 struct SurfaceData {
+    is_sky: bool,
     ws_pos: vec3<f32>,
     ws_normal: vec3<f32>,
     ws_hit_normal: vec3<f32>,
 }
 
 fn gather_surface(uv: vec2<f32>, inv_view_proj: mat4x4<f32>, depth: f32, packed: u32) -> SurfaceData {
+    if depth < 0.0 {
+        var res: SurfaceData;
+        res.is_sky = true;
+        return res;
+    }
+
     let ray = primary_ray(uv, inv_view_proj);
     
     let voxel = unpack_voxel(packed);
