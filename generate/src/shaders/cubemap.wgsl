@@ -7,7 +7,7 @@ struct ComputeIn {
 };
 
 @compute @workgroup_size(8, 8, 1)
-fn compute_main(in: ComputeIn) {    
+fn compute_main(in: ComputeIn) {
     // Project from the current pixel and face in the output cubemap to find
     // the equivalent sample point in the equirrectangular input texture.
 

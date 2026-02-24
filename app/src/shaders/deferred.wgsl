@@ -66,7 +66,6 @@ fn compute_main(in: ComputeIn) {
     let depth = textureLoad(tex_depth, pos).r;
     if depth < 0.0 {
         var sky = textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
-        // sky = pow(sky, vec3(1.0) / 2.2);
         textureStore(out_color, vec2<i32>(in.id.xy), vec4(sky, 1.0));
         return;
     }

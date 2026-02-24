@@ -1744,6 +1744,8 @@ impl Renderer {
             timing.resolve(&mut encoder);
         }
 
+        println!("fps: {}", 1.0 / ctx.ui.state.frame_avg.as_secs_f64());
+
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
             device: ctx.device,

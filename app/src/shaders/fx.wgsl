@@ -64,7 +64,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = fxaa(in.position, in.uv);
     }
 
-    color = tonemap(color);
+    // color = tonemap(color);
     color = pow(color, vec3(1.0 / 2.2));
     return vec4(color, 1.0);
 }
@@ -75,12 +75,7 @@ fn tonemap(x: vec3<f32>) -> vec3<f32> {
     const c = 2.43;
     const d = 0.59;
     const e = 0.14;
-    let out: vec3<f32> = (x * (a * x + b)) / (x * (c * x + d) + e);
-    return vec3<f32>(
-        clamp(out.r, 0.0, 1.0),
-        clamp(out.g, 0.0, 1.0),
-        clamp(out.b, 0.0, 1.0)
-    );
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
 
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;
