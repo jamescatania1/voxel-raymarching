@@ -4,6 +4,7 @@ use wgpu::util::DeviceExt;
 
 use crate::{
     SizedWindow,
+    config::Config,
     engine::Engine,
     models::MODELS,
     renderer::{
@@ -27,6 +28,7 @@ pub struct RendererCtx<'a> {
     pub format: &'a wgpu::TextureFormat,
     pub engine: &'a mut Engine,
     pub ui: &'a mut Ui,
+    pub config: &'a mut Config,
 }
 
 pub struct Renderer {
@@ -136,7 +138,7 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
-        engine: &Engine,
+        config: &mut Config,
         ui: &mut Ui,
     ) -> Self {
         let bg_layouts = BindGroupLayouts {
@@ -620,6 +622,16 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             }),
             taa_input: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -902,7 +914,7 @@ impl Renderer {
 
         let src = std::fs::File::open("app/assets/sky.hdr").unwrap();
         let src = std::io::BufReader::new(src);
-        let tex_skybox = generate::generate_lighting(src, &device, &queue).unwrap();
+        let ibl = generate::generate_lighting(src, &device, &queue).unwrap();
 
         let samplers = Samplers {
             linear: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1115,7 +1127,18 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&tex_skybox.create_view(
+                        resource: wgpu::BindingResource::TextureView(&ibl.cubemap.create_view(
+                            &wgpu::TextureViewDescriptor {
+                                label: Some("skybox"),
+                                dimension: Some(wgpu::TextureViewDimension::Cube),
+                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&ibl.irradiance.create_view(
                             &wgpu::TextureViewDescriptor {
                                 label: Some("skybox"),
                                 dimension: Some(wgpu::TextureViewDimension::Cube),
@@ -1138,10 +1161,10 @@ impl Renderer {
 
         let quad = Quad::new(device);
 
-        ui.state.sun_azimuth = -2.5;
-        ui.state.sun_altitude = 1.3;
-        ui.state.voxel_count = scene.meta.voxel_count;
-        ui.state.scene_size = scene.meta.size_voxels.as_ivec3();
+        config.sun_azimuth = -2.5;
+        config.sun_altitude = 1.3;
+        ui.debug.voxel_count = scene.meta.voxel_count;
+        ui.debug.scene_size = scene.meta.size_voxels.as_ivec3();
 
         let mut _self = Self {
             pipelines,
@@ -1571,12 +1594,25 @@ impl Renderer {
         ));
     }
 
+    pub fn fixed_update<'a>(&mut self, ctx: &'a mut RendererCtx) {
+        // #[derive(Debug)]
+        // struct DebugStats {
+        //     fps: f64,
+        //     frame: Duration,
+        // }
+        // let stats = DebugStats {
+        //     fps: 1.0 / ctx.ui.debug.frame_avg.as_secs_f64(),
+        //     frame: ctx.ui.debug.frame_avg,
+        // };
+        // eprintln!("{:?}", stats);
+    }
+
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {
-        if ctx.ui.state.render_scale != self.render_scale {
-            self.render_scale = ctx.ui.state.render_scale;
+        if ctx.config.render_scale != self.render_scale {
+            self.render_scale = ctx.config.render_scale;
             self.update_screen_resources(ctx.window, ctx.device);
         }
-        ctx.ui.state.render_resolution = self.size;
+        ctx.ui.debug.render_resolution = self.size;
 
         // update uniform buffers
         {
@@ -1590,26 +1626,26 @@ impl Renderer {
             };
             self.prev_camera = Some(camera);
             self.sun_direction = glam::vec3(
-                ctx.ui.state.sun_altitude.cos() * ctx.ui.state.sun_azimuth.cos(),
-                ctx.ui.state.sun_altitude.cos() * ctx.ui.state.sun_azimuth.sin(),
-                ctx.ui.state.sun_altitude.sin(),
+                ctx.config.sun_altitude.cos() * ctx.config.sun_azimuth.cos(),
+                ctx.config.sun_altitude.cos() * ctx.config.sun_azimuth.sin(),
+                ctx.config.sun_altitude.sin(),
             )
             .normalize();
-            ctx.ui.state.sun_direction = self.sun_direction;
+            ctx.ui.debug.sun_direction = self.sun_direction;
             ctx.queue.write_buffer(
                 &self.buffers.environment,
                 0,
                 bytemuck::cast_slice(&[EnvironmentDataBuffer {
                     sun_direction: self.sun_direction,
-                    shadow_bias: ctx.ui.state.shadow_bias,
+                    shadow_bias: ctx.config.shadow_bias,
                     camera,
                     prev_camera,
-                    shadow_spread: ctx.ui.state.shadow_spread,
-                    filter_shadows: ctx.ui.state.filter_shadows as u32,
-                    shadow_filter_radius: ctx.ui.state.shadow_filter_radius,
-                    max_ambient_distance: ctx.ui.state.ambient_ray_max_distance,
-                    voxel_normal_factor: ctx.ui.state.voxel_normal_factor,
-                    debug_view: ctx.ui.state.view as u32,
+                    shadow_spread: ctx.config.shadow_spread,
+                    filter_shadows: ctx.config.filter_shadows as u32,
+                    shadow_filter_radius: ctx.config.shadow_filter_radius,
+                    max_ambient_distance: ctx.config.ambient_ray_max_distance,
+                    voxel_normal_factor: ctx.config.voxel_normal_factor,
+                    debug_view: ctx.config.view as u32,
                     pad: [0.0; 2],
                 }]),
             );
@@ -1624,8 +1660,8 @@ impl Renderer {
                 0,
                 bytemuck::cast_slice(&[
                     self.frame_id,
-                    ctx.ui.state.taa as u32,
-                    ctx.ui.state.fxaa as u32,
+                    ctx.config.taa as u32,
+                    ctx.config.fxaa as u32,
                 ]),
             );
         }
@@ -1744,14 +1780,13 @@ impl Renderer {
             timing.resolve(&mut encoder);
         }
 
-        println!("fps: {}", 1.0 / ctx.ui.state.frame_avg.as_secs_f64());
-
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
             device: ctx.device,
             queue: ctx.queue,
             texture_view: &texture_view,
             encoder: &mut encoder,
+            config: ctx.config,
         });
 
         ctx.queue.submit([encoder.finish()]);
@@ -1759,10 +1794,10 @@ impl Renderer {
         ctx.window.pre_present_notify();
         surface_texture.present();
 
-        if let Some(timing) = &mut self.timing {
-            if let Some(results) = timing.gather_results() {
-                ctx.ui.state.pass_avg = results;
-            }
+        if let Some(timing) = &mut self.timing
+            && let Some(results) = timing.gather_results()
+        {
+            ctx.ui.debug.pass_avg = results;
         }
 
         self.frame_id = self.frame_id.wrapping_add(1);

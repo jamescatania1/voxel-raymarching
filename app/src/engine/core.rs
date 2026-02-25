@@ -74,15 +74,15 @@ impl Engine {
         // self.model.scale = glam::Vec3::ONE / self.scene.size.max_element() as f32;
         self.model.update();
 
-        ctx.ui.state.frame_avg = ctx.ui.state.frame_avg.mul_f64(1.0 - FRAME_AVG_DECAY_ALPHA)
+        ctx.ui.debug.frame_avg = ctx.ui.debug.frame_avg.mul_f64(1.0 - FRAME_AVG_DECAY_ALPHA)
             + delta_time.mul_f64(FRAME_AVG_DECAY_ALPHA);
 
         // ctx.ui.state.voxel_count = self.scene.voxel_count;
         // ctx.ui.state.scene_size = self.scene.size;
-        ctx.ui.state.camera_pos = self.camera.position;
-        ctx.ui.state.camera_rotation = self.camera.rotation;
-        ctx.ui.state.camera_forward = self.camera.forward;
-        ctx.ui.state.camera_near = self.camera.near;
-        ctx.ui.state.camera_far = self.camera.far;
+        ctx.ui.debug.camera_pos = self.camera.position;
+        ctx.ui.debug.camera_rotation = self.camera.rotation;
+        ctx.ui.debug.camera_forward = self.camera.forward;
+        ctx.ui.debug.camera_near = self.camera.near;
+        ctx.ui.debug.camera_far = self.camera.far;
     }
 }

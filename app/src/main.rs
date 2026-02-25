@@ -1,6 +1,8 @@
+mod config;
 mod engine;
 mod renderer;
 mod ui;
+
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
 use std::{sync::Arc, time::Instant};
@@ -10,6 +12,7 @@ use winit::{
     application::ApplicationHandler, event::DeviceEvent, event::WindowEvent, window::Window,
 };
 
+use crate::config::Config;
 use crate::renderer::gltf_viewer::ModelViewer;
 use crate::{
     engine::{Engine, EngineCtx},
@@ -48,15 +51,14 @@ impl ApplicationHandler for Program {
     fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let state = self.state.as_mut().unwrap();
 
-        if !state.ui.state.limit_fps {
+        let Some(max_fps) = state.config.max_fps else {
             return;
-        }
+        };
 
         let now = Instant::now();
         let prev_time = state.prev_time.unwrap_or(now);
         let elapsed = now - prev_time;
-        let targ_frame_time =
-            std::time::Duration::from_secs_f64(1.0 / (state.ui.state.max_fps as f64));
+        let targ_frame_time = std::time::Duration::from_secs_f64(1.0 / (max_fps as f64));
 
         if elapsed >= targ_frame_time {
             state.window.request_redraw();
@@ -84,10 +86,12 @@ struct State {
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     format: wgpu::TextureFormat,
+    config: Config,
     engine: Engine,
     renderer: Renderer,
     ui: Ui,
     prev_time: Option<Instant>,
+    prev_time_fixed: Option<Instant>,
     debug_viewer: Option<ModelViewer>,
 }
 
@@ -130,6 +134,8 @@ impl State {
             (surface, format)
         };
 
+        let mut config = Config::default();
+
         let engine = Engine::new(&window);
 
         let mut ui = Ui::new(&window, &device, format);
@@ -139,7 +145,7 @@ impl State {
             &device,
             &queue,
             format,
-            &engine,
+            &mut config,
             &mut ui,
         );
 
@@ -161,11 +167,13 @@ impl State {
             queue,
             surface,
             format,
+            config,
             engine,
             renderer,
             ui,
             debug_viewer,
             prev_time: None,
+            prev_time_fixed: None,
         };
 
         _self.configure_surface();
@@ -176,6 +184,27 @@ impl State {
     fn frame(&mut self) {
         let time = Instant::now();
         let delta_time = time - *self.prev_time.get_or_insert_with(|| time.clone());
+
+        match self.prev_time_fixed {
+            Some(prev_time_fixed) => {
+                if (time - prev_time_fixed).as_secs_f64() >= 1.0 {
+                    self.renderer.fixed_update(&mut RendererCtx {
+                        window: &self.window,
+                        device: &self.device,
+                        queue: &self.queue,
+                        surface: &self.surface,
+                        format: &self.format,
+                        engine: &mut self.engine,
+                        ui: &mut self.ui,
+                        config: &mut self.config,
+                    });
+                    self.prev_time_fixed = Some(time);
+                }
+            }
+            None => {
+                self.prev_time_fixed = Some(time);
+            }
+        }
 
         self.engine.frame(
             &delta_time,
@@ -194,6 +223,7 @@ impl State {
                 format: &self.format,
                 engine: &mut self.engine,
                 ui: &mut self.ui,
+                config: &mut self.config,
             });
         } else {
             self.renderer.frame(
@@ -206,6 +236,7 @@ impl State {
                     format: &self.format,
                     engine: &mut self.engine,
                     ui: &mut self.ui,
+                    config: &mut self.config,
                 },
             );
         }
@@ -214,7 +245,7 @@ impl State {
 
         self.prev_time = Some(time);
 
-        if !self.ui.state.limit_fps {
+        if self.config.max_fps.is_none() {
             self.window.request_redraw();
         }
     }

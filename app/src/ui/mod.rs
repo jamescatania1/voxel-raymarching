@@ -1,4 +1,5 @@
-mod core;
+mod debug;
 mod renderer;
+mod settings;
 
-pub use self::core::{Ui, UiCtx};
+pub use self::renderer::{Ui, UiCtx};

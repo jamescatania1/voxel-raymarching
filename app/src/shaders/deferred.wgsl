@@ -10,6 +10,7 @@
 @group(2) @binding(1) var sampler_noise: sampler;
 @group(2) @binding(2) var tex_noise: texture_2d<f32>;
 @group(2) @binding(3) var tex_skybox: texture_cube<f32>;
+@group(2) @binding(4) var tex_irradiance: texture_cube<f32>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -81,6 +82,7 @@ fn compute_main(in: ComputeIn) {
     let illumination = textureLoad(tex_illumination, pos, 0);
     let shadow = illumination.r;
     let ambient = illumination.g;
+    let skybox_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, voxel.ws_normal.xzy, 0.0).rgb;
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
@@ -93,6 +95,7 @@ fn compute_main(in: ComputeIn) {
     surface.roughness = voxel.roughness;
     surface.shadow = shadow;
     surface.ao = ambient;
+    surface.sky_irradiance = skybox_irradiance;
     var color = pbr(surface);
 
     if environment.debug_view != 0u {
@@ -141,6 +144,7 @@ struct PbrInput {
     roughness: f32,
     shadow: f32,
     ao: f32,
+    sky_irradiance: vec3<f32>,
 }
 
 fn pbr(in: PbrInput) -> vec3<f32> {
@@ -172,7 +176,17 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     }
     var indirect: vec3<f32>;
     {
-        indirect = in.albedo * AMBIENT * in.ao;
+        let f_0 = mix(vec3(0.04), in.albedo, in.metallic);
+        let k_s = fresnel_roughness(f_0, N, V, in.roughness);
+        let k_d = (1.0 - k_s) * (1.0 - in.metallic);
+
+        let diffuse = in.sky_irradiance * in.albedo / PI;
+
+        // need actual specular
+        let specular = vec3(0.0);
+
+        let brdf = k_d * diffuse + specular;
+        indirect = brdf * in.ao;
     }
     let res = direct + indirect;
     return res;
@@ -210,6 +224,11 @@ fn geom_ggx(r: f32, N: vec3<f32>, x: vec3<f32>) -> f32 {
 fn fresnel(f0: vec3<f32>, H: vec3<f32>, V: vec3<f32>) -> vec3<f32> {
     let ndv = max(dot(H, V), 0.0);
     return f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
+}
+
+fn fresnel_roughness(f0: vec3<f32>, N: vec3<f32>, V: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let ndv = max(dot(N, V), 0.0);
+    return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - ndv, 5.0);
 }
 
 
