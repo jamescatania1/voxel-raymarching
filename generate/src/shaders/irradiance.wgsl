@@ -27,13 +27,13 @@ fn compute_main(in: ComputeIn) {
     var irradiance = vec3<f32>(0.0);
     var samples: i32 = 0;
     for (var p: f32 = 0.0; p < 2.0 * PI; p += delta) {
-        for (var t: f32 = 0.0; t < 0.5 * PI; t += delta) { 
+        for (var t: f32 = 0.0; t < 0.5 * PI; t += delta) {
             let tangent = vec3<f32>(sin(t) * cos(p), sin(t) * sin(p), cos(t));
 
             let dir = tangent.x * right + tangent.y * up + tangent.z * normal;
             let sample = textureSampleLevel(tex_in, sampler_main, dir.xyz, 0.0).rgb;
 
-            irradiance += clamp(sample, vec3<f32>(0.0), vec3<f32>(100.0)) * cos(t) * sin(t);
+            irradiance += sample * cos(t) * sin(t);
             samples += 1;
         }
     }

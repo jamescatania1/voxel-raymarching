@@ -70,8 +70,6 @@ fn compute_main(in: ComputeIn) {
     var uv = vec2<f32>(u, v) / 2.0 + 0.5;
 
     var color: vec3<f32> = textureSampleLevel(tex_in, sampler_main, uv, 0.0).rgb;
-    // var rgb = color.rgb * pow(2.0, color.a * 256.0 - 128.0);
-    // rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(50.0));
 
     textureStore(tex_out, in.id.xy, in.id.z, vec4<f32>(color, 1.0));
 }

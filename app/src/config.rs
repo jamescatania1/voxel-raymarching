@@ -46,4 +46,7 @@ pub enum DebugView {
     Shadow = 5,
     Ambient = 6,
     Velocity = 7,
+    SkyAlbedo = 8,
+    SkyIrradiance = 9,
+    SkyPrefiler = 10,
 }

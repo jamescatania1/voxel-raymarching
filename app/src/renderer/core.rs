@@ -632,6 +632,26 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             }),
             taa_input: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -924,7 +944,7 @@ impl Renderer {
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
                 ..Default::default()
             }),
             nearest_repeat: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1140,8 +1160,30 @@ impl Renderer {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(&ibl.irradiance.create_view(
                             &wgpu::TextureViewDescriptor {
-                                label: Some("skybox"),
+                                label: Some("irradiance"),
                                 dimension: Some(wgpu::TextureViewDimension::Cube),
+                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&ibl.prefilter.create_view(
+                            &wgpu::TextureViewDescriptor {
+                                label: Some("prefilter"),
+                                dimension: Some(wgpu::TextureViewDimension::Cube),
+                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&ibl.brdf.create_view(
+                            &wgpu::TextureViewDescriptor {
+                                label: Some("brdf"),
+                                dimension: Some(wgpu::TextureViewDimension::D2),
                                 usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
                                 ..Default::default()
                             },

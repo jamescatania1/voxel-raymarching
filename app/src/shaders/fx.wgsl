@@ -64,7 +64,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = fxaa(in.position, in.uv);
     }
 
-    // color = tonemap(color);
+    color = tonemap(color);
     color = pow(color, vec3(1.0 / 2.2));
     return vec4(color, 1.0);
 }

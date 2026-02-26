@@ -11,6 +11,8 @@
 @group(2) @binding(2) var tex_noise: texture_2d<f32>;
 @group(2) @binding(3) var tex_skybox: texture_cube<f32>;
 @group(2) @binding(4) var tex_irradiance: texture_cube<f32>;
+@group(2) @binding(5) var tex_prefilter: texture_cube<f32>;
+@group(2) @binding(6) var tex_brdf_lut: texture_2d<f32>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -88,6 +90,7 @@ fn compute_main(in: ComputeIn) {
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
 
     var surface: PbrInput;
+    surface.uv = uv;
     surface.ws_pos = ws_pos;
     surface.ws_normal = voxel.ws_normal;
     surface.albedo = albedo;
@@ -102,7 +105,7 @@ fn compute_main(in: ComputeIn) {
         color *= 0.00001;
         switch environment.debug_view {
             case 1u: {
-                color += albedo;
+                color += vec3(surface.roughness, surface.metallic, 0.0);
             }
             case 2u {
                 color += depth * 0.005;
@@ -122,6 +125,16 @@ fn compute_main(in: ComputeIn) {
             case 7u {
                 color += vec3(abs(velocity), 0.0);
             }
+            case 8u {
+                color += textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+            }
+            case 9u {
+                color += textureSampleLevel(tex_irradiance, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+            }
+            case 10u {
+                let t = cos(f32(frame.frame_id) / 300.0) * 0.5 + 0.5;
+                color += textureSampleLevel(tex_prefilter, sampler_linear, ray.ws_direction.xzy, t * 5.0).rgb;
+            }
             default {}
         }
     }
@@ -137,6 +150,7 @@ fn compute_main(in: ComputeIn) {
 }
 
 struct PbrInput {
+    uv: vec2<f32>,
     ws_pos: vec3<f32>,
     ws_normal: vec3<f32>,
     albedo: vec3<f32>,
@@ -152,6 +166,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let V = normalize(environment.camera.ws_position - in.ws_pos);
     let L = normalize(environment.sun_direction);
     let H = normalize(V + L);
+    let R = reflect(-V, N);
 
     const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.1;
     const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 5.8;
@@ -176,17 +191,19 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     }
     var indirect: vec3<f32>;
     {
+        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb;
+        let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(max(dot(N, V), 0.0), in.roughness), 0.0).rg;
+
         let f_0 = mix(vec3(0.04), in.albedo, in.metallic);
         let k_s = fresnel_roughness(f_0, N, V, in.roughness);
         let k_d = (1.0 - k_s) * (1.0 - in.metallic);
 
         let diffuse = in.sky_irradiance * in.albedo / PI;
+        // let diffuse = vec3(0.);
 
-        // need actual specular
-        let specular = vec3(0.0);
+        let specular = 0.3 * sky_prefilter * (k_s * sky_brdf.x + sky_brdf.y);
 
-        let brdf = k_d * diffuse + specular;
-        indirect = brdf * in.ao;
+        indirect = (k_d * diffuse + specular) * in.ao * 0.1;
     }
     let res = direct + indirect;
     return res;
@@ -227,7 +244,7 @@ fn fresnel(f0: vec3<f32>, H: vec3<f32>, V: vec3<f32>) -> vec3<f32> {
 }
 
 fn fresnel_roughness(f0: vec3<f32>, N: vec3<f32>, V: vec3<f32>, roughness: f32) -> vec3<f32> {
-    let ndv = max(dot(N, V), 0.0);
+    let ndv = max(dot(N, V), 0.01);
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - ndv, 5.0);
 }
 

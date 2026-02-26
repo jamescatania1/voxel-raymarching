@@ -131,6 +131,17 @@ impl DebugWindow {
                         ui.selectable_value(&mut config.view, DebugView::Ambient, "Ambient");
                         ui.selectable_value(&mut config.view, DebugView::Shadow, "Shadow");
                         ui.selectable_value(&mut config.view, DebugView::Velocity, "Velocity");
+                        ui.selectable_value(&mut config.view, DebugView::SkyAlbedo, "Sky Albedo");
+                        ui.selectable_value(
+                            &mut config.view,
+                            DebugView::SkyIrradiance,
+                            "Sky Irradiance",
+                        );
+                        ui.selectable_value(
+                            &mut config.view,
+                            DebugView::SkyPrefiler,
+                            "Sky Prefilter",
+                        );
                     });
                 ui.end_row();
 
