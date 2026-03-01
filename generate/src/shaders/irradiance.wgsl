@@ -37,7 +37,7 @@ fn compute_main(in: ComputeIn) {
             samples += 1;
         }
     }
-    irradiance = PI * irradiance * (1.0 / f32(samples));
+    irradiance = PI * PI * irradiance * (1.0 / f32(samples));
 
     textureStore(tex_out, vec2<i32>(in.id.xy), in.id.z, vec4<f32>(irradiance, 1.0));
 }

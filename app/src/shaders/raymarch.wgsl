@@ -89,7 +89,7 @@ fn trace_scene(pos: vec2<i32>) -> SceneResult {
 
 	let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
-	
+
 	let ray = raymarch(start_ray(select(uv_jittered, uv, frame.taa_enabled == 0u)));
 
 	if !ray.hit {
@@ -120,9 +120,9 @@ fn trace_scene(pos: vec2<i32>) -> SceneResult {
     let ls_normal = align_per_voxel_normal(ray.hit_normal, ray.voxel.normal);
 	// let ls_normal = ray.hit_normal;
     let ws_normal = normalize(model.normal_transform * ls_normal);
-	
-	// let packed = repack_voxel(ws_normal,ray.voxel.metallic , ray.voxel.roughness , ray.hit_mask);
-	let packed = repack_voxel(ws_normal,1.0, 0.0, ray.hit_mask);
+
+	let packed = repack_voxel(ws_normal,ray.voxel.metallic , ray.voxel.roughness , ray.hit_mask);
+	// let packed = repack_voxel(ws_normal,0.0, 0.0, ray.hit_mask);
 
 	var res: SceneResult;
 	res.albedo = albedo;
@@ -227,7 +227,7 @@ fn raymarch(ray: Ray) -> RaymarchResult {
 					let t_brick_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
 					let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
 					let local_pos = ray.ls_origin + dir * t_total;
-					
+
 					var res: RaymarchResult;
 					res.hit = true;
 					res.voxel = unpack_voxel(packed);
@@ -353,7 +353,7 @@ fn palette_color(index: u32) -> vec3<f32> {
 
 
 // clamps per-voxel normal to cone aligned with the hit normal
-// https://www.desmos.com/3d/cnbvln5rz6 
+// https://www.desmos.com/3d/cnbvln5rz6
 fn align_per_voxel_normal(n_hit: vec3<f32>, n_surface: vec3<f32>) -> vec3<f32> {
     let t = clamp(1.0 - environment.smooth_normal_factor * 2.0, -0.999, 0.999);
 

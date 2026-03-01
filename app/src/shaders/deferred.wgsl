@@ -1,3 +1,6 @@
+override min_roughness: f32 = 0.001;
+override dielectric_specular: f32 = 0.04;
+
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
@@ -87,8 +90,6 @@ fn compute_main(in: ComputeIn) {
     let shadow = illumination.r;
     let ambient = illumination.g;
     let specular = textureLoad(tex_specular, pos, 0).rgb;
-    // let specular = illumination.b;
-    let skybox_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, voxel.ws_normal.xzy, 0.0).rgb;
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
@@ -99,11 +100,10 @@ fn compute_main(in: ComputeIn) {
     surface.ws_normal = voxel.ws_normal;
     surface.albedo = albedo;
     surface.metallic = voxel.metallic;
-    surface.roughness = voxel.roughness;
+    surface.roughness = max(voxel.roughness, min_roughness);
     surface.shadow = shadow;
     surface.ao = ambient;
     surface.specular = specular;
-    surface.sky_irradiance = skybox_irradiance;
     var color = pbr(surface);
 
     if environment.debug_view != 0u {
@@ -173,7 +173,6 @@ struct PbrInput {
     specular: vec3<f32>,
     shadow: f32,
     ao: f32,
-    sky_irradiance: vec3<f32>,
 }
 
 fn pbr(in: PbrInput) -> vec3<f32> {
@@ -187,8 +186,6 @@ fn pbr(in: PbrInput) -> vec3<f32> {
 
     var direct: vec3<f32>;
     {
-        let diffuse = in.albedo / PI;
-
         let f_0 = mix(vec3(0.04), in.albedo, in.metallic);
         let k_s = fresnel(f_0, H, V);
         let k_d = (1.0 - k_s) * (1.0 - in.metallic);
@@ -198,27 +195,32 @@ fn pbr(in: PbrInput) -> vec3<f32> {
 
         let ndv = max(dot(N, V), 0.0);
         let ndl = max(dot(N, L), 0.0);
+
+        let diffuse  = k_d * in.albedo / PI;
+
         let specular = ndf * geom * k_s / max(4.0 * ndv * ndl, 0.000001);
 
-        let brdf = k_d * diffuse + specular;
+        let brdf = diffuse + specular;
         direct = brdf * SUN_COLOR * in.shadow * ndl;
     }
     var indirect: vec3<f32>;
     {
-        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb;
-        let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(max(dot(N, V), 0.0), in.roughness), 0.0).rg;
-
         let f_0 = mix(vec3(0.04), in.albedo, in.metallic);
         let k_s = fresnel_roughness(f_0, N, V, in.roughness);
         let k_d = (1.0 - k_s) * (1.0 - in.metallic);
 
-        let diffuse = in.sky_irradiance * in.albedo / PI;
-        // let diffuse = vec3(0.);
+        let ndv = clamp(dot(N, V), 0.0001, 1.0);
+        let vdh = saturate(dot(V, H));
 
-        // let specular = in.specular * sky_prefilter * (k_s * sky_brdf.x + sky_brdf.y);
-        let specular = in.specular;
+        let sky_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, N.xzy, 0.0).rgb * environment.indirect_sky_intensity;
+        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
+        let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
-        indirect = (k_d * diffuse + specular) * in.ao * environment.indirect_sky_intensity;
+        let diffuse = k_d * sky_irradiance * in.albedo / PI;
+
+        let specular = sky_prefilter * (f_0 * sky_brdf.x + sky_brdf.y);
+
+        indirect = (diffuse + specular) * in.ao;
     }
     let res = direct + indirect;
     return res;
@@ -228,13 +230,10 @@ const PI: f32 = 3.14159265359;
 
 // GGX/Trowbridge-Reitz
 fn normal_distribution(r: f32, N: vec3<f32>, H: vec3<f32>) -> f32 {
-    let num = pow(r, 2.0);
-
     let ndh = max(dot(N, H), 0.0);
     let d = ndh * ndh * (r * r - 1.0) + 1.0;
-    let den = PI * d * d;
 
-    return num / max(den, 0.000001);
+    return pow(r, 2.0) / max(PI * d * d, 0.000001);
 }
 
 // Smith model

@@ -73,7 +73,7 @@ fn compute_main(in: ComputeIn) {
 
 	let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
-	
+
     let ray_length = textureLoad(tex_depth, pos).r;
     if ray_length < 0.0 {
         // primary ray missed
@@ -107,7 +107,7 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
 
     var dir = rand_hemisphere_direction(noise.xy, roughness);
     dir = align_direction(dir, reflect_dir);
-    
+
     var in: SparseRay;
     in.origin = ls_pos + environment.shadow_bias * ls_normal;
     in.direction = dir;
@@ -210,7 +210,7 @@ fn raymarch(ray: SparseRay) -> RaymarchResult {
 					// let t_brick_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
 					// let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
 					// let local_pos = ray.ls_origin + dir * t_total;
-					
+
 					var res: RaymarchResult;
 					res.hit = true;
 					res.voxel = unpack_brickmap_voxel(packed);

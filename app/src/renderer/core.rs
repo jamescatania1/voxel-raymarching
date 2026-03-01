@@ -1,10 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
-use wgpu::{ShaderStages, util::DeviceExt};
+use wgpu::{ShaderStages, include_wgsl, util::DeviceExt};
 
 use crate::{
     SizedWindow,
     config::Config,
+    define_shaders,
     engine::Engine,
     lightmap::LIGHTMAPS,
     models::MODELS,
@@ -19,8 +20,21 @@ use crate::{
         },
     },
     ui::{Ui, UiCtx},
-    utils::layout::*,
+    utils::{
+        layout::{DeviceUtils, *},
+        pipeline::PipelineUtils,
+    },
 };
+
+define_shaders! {
+    raymarch "../shaders/raymarch.wgsl",
+    ambient "../shaders/ambient.wgsl",
+    specular "../shaders/specular.wgsl",
+    lighting_resolve "../shaders/lighting_resolve.wgsl",
+    deferred "../shaders/deferred.wgsl",
+    taa "../shaders/taa.wgsl",
+    fx "../shaders/fx.wgsl",
+}
 
 pub struct RendererCtx<'a> {
     pub window: &'a winit::window::Window,
@@ -47,16 +61,6 @@ pub struct Renderer {
     render_scale: f32,
     sun_direction: glam::Vec3,
     prev_camera: Option<CameraDataBuffer>,
-}
-
-struct PipelineLayouts {
-    raymarch: wgpu::PipelineLayout,
-    ambient: wgpu::PipelineLayout,
-    specular: wgpu::PipelineLayout,
-    lighting_resolve: wgpu::PipelineLayout,
-    deferred: wgpu::PipelineLayout,
-    taa: wgpu::PipelineLayout,
-    fx: wgpu::PipelineLayout,
 }
 
 struct Pipelines {
@@ -244,375 +248,110 @@ impl Renderer {
                     storage_texture().rgba16float().dimension_2d().read_only(),
                 ),
             ),
-            deferred_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("deferred_swap"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            deferred_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("deferred_static"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::Cube,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::Cube,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::Cube,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            taa_input: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("taa_input"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            taa_output: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("taa_output"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            fx_input: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("fx_input"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            }),
+            deferred_swap: device.layout(
+                "deferred_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                    texture().float().dimension_2d(),
+                    texture().float().dimension_2d(),
+                ),
+            ),
+            deferred_static: device.layout(
+                "deferred_static",
+                ShaderStages::COMPUTE,
+                (
+                    sampler().filtering(),
+                    sampler().non_filtering(),
+                    texture().unfilterable_float().dimension_2d(),
+                    texture().float().dimension_cube(),
+                    texture().float().dimension_cube(),
+                    texture().float().dimension_cube(),
+                    texture().float().dimension_2d(),
+                ),
+            ),
+            taa_input: device.layout(
+                "taa_input",
+                ShaderStages::COMPUTE,
+                (
+                    sampler().filtering(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    texture().float().dimension_2d(),
+                ),
+            ),
+            taa_output: device.layout(
+                "taa_output",
+                ShaderStages::COMPUTE,
+                (
+                    texture().float().dimension_2d(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    texture().float().dimension_2d(),
+                ),
+            ),
+            fx_input: device.layout(
+                "fx_input",
+                ShaderStages::FRAGMENT,
+                (texture().float().dimension_2d(), sampler().filtering()),
+            ),
         };
 
-        let pipeline_layouts = PipelineLayouts {
-            raymarch: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("raymarch"),
-                bind_group_layouts: &[
+        let shaders = device.create_shaders();
+
+        let pipelines = Pipelines {
+            raymarch: device
+                .compute_pipeline("raymarch", &shaders.raymarch)
+                .layout(&[
                     &bg_layouts.raymarch_gbuffer,
                     &bg_layouts.raymarch_swap,
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
-                ],
-                immediate_size: 0,
-            }),
-            ambient: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("ambient"),
-                bind_group_layouts: &[
+                ]),
+            ambient: device
+                .compute_pipeline("ambient", &shaders.ambient)
+                .layout(&[
                     &bg_layouts.ambient_gbuffer,
                     &bg_layouts.ambient_swap,
                     &bg_layouts.ambient_static,
                     &bg_layouts.per_frame_shared,
-                ],
-                immediate_size: 0,
-            }),
-            specular: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("specular"),
-                bind_group_layouts: &[
+                ]),
+            specular: device
+                .compute_pipeline("specular", &shaders.specular)
+                .layout(&[
                     &bg_layouts.specular_gbuffer,
                     &bg_layouts.ambient_swap,
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
-                ],
-                immediate_size: 0,
-            }),
-            lighting_resolve: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("lighting_resolve"),
-                bind_group_layouts: &[
+                ]),
+            lighting_resolve: device
+                .compute_pipeline("lighting_resolve", &shaders.lighting_resolve)
+                .layout(&[
                     &bg_layouts.lighting_resolve_gbuffer,
                     &bg_layouts.lighting_resolve_swap,
                     &bg_layouts.per_frame_shared,
-                ],
-                immediate_size: 0,
-            }),
-            deferred: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("deferred"),
-                bind_group_layouts: &[
+                ]),
+            deferred: device
+                .compute_pipeline("deferred", &shaders.deferred)
+                .layout(&[
                     &bg_layouts.deferred_gbuffer,
                     &bg_layouts.deferred_swap,
                     &bg_layouts.deferred_static,
                     &bg_layouts.per_frame_shared,
-                ],
-                immediate_size: 0,
-            }),
-            taa: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("taa"),
-                bind_group_layouts: &[
-                    &bg_layouts.per_frame_shared,
-                    &bg_layouts.taa_input,
-                    &bg_layouts.taa_output,
-                ],
-                immediate_size: 0,
-            }),
-            fx: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("fx"),
-                bind_group_layouts: &[&bg_layouts.fx_input, &bg_layouts.per_frame_shared],
-                immediate_size: 0,
-            }),
-        };
-
-        struct Shaders {
-            raymarch: wgpu::ShaderModule,
-            ambient: wgpu::ShaderModule,
-            specular: wgpu::ShaderModule,
-            deferred: wgpu::ShaderModule,
-            lighting_resolve: wgpu::ShaderModule,
-            taa: wgpu::ShaderModule,
-            fx: wgpu::ShaderModule,
-        }
-        let shaders = Shaders {
-            raymarch: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("raymarch"),
-                source: wgpu::ShaderSource::Wgsl(
-                    std::include_str!("../shaders/raymarch.wgsl").into(),
-                ),
-            }),
-            ambient: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("ambient"),
-                source: wgpu::ShaderSource::Wgsl(
-                    std::include_str!("../shaders/ambient.wgsl").into(),
-                ),
-            }),
-            specular: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("specular"),
-                source: wgpu::ShaderSource::Wgsl(
-                    std::include_str!("../shaders/specular.wgsl").into(),
-                ),
-            }),
-            lighting_resolve: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("lighting_resolve"),
-                source: wgpu::ShaderSource::Wgsl(
-                    std::include_str!("../shaders/lighting_resolve.wgsl").into(),
-                ),
-            }),
-            deferred: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("deferred"),
-                source: wgpu::ShaderSource::Wgsl(
-                    std::include_str!("../shaders/deferred.wgsl").into(),
-                ),
-            }),
-            taa: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("taa"),
-                source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/taa.wgsl").into()),
-            }),
-            fx: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("fx"),
-                source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/fx.wgsl").into()),
-            }),
-        };
-
-        let pipelines = Pipelines {
-            raymarch: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("raymarch"),
-                layout: Some(&pipeline_layouts.raymarch),
-                module: &shaders.raymarch,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
-            ambient: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("ambient"),
-                layout: Some(&pipeline_layouts.ambient),
-                module: &shaders.ambient,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
-            specular: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("specular"),
-                layout: Some(&pipeline_layouts.specular),
-                module: &shaders.specular,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
-            lighting_resolve: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("lighting_resolve"),
-                layout: Some(&pipeline_layouts.lighting_resolve),
-                module: &shaders.lighting_resolve,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
-            deferred: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("deferred"),
-                layout: Some(&pipeline_layouts.deferred),
-                module: &shaders.deferred,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
-            taa: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("taa"),
-                layout: Some(&pipeline_layouts.taa),
-                module: &shaders.taa,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
+                ]),
+            taa: device.compute_pipeline("taa", &shaders.taa).layout(&[
+                &bg_layouts.per_frame_shared,
+                &bg_layouts.taa_input,
+                &bg_layouts.taa_output,
+            ]),
             fx: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("post fx pipeline"),
-                layout: Some(&pipeline_layouts.fx),
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("fx"),
+                        bind_group_layouts: &[&bg_layouts.fx_input, &bg_layouts.per_frame_shared],
+                        immediate_size: 0,
+                    }),
+                ),
                 vertex: wgpu::VertexState {
                     module: &shaders.fx,
                     entry_point: Some("vs_main"),
