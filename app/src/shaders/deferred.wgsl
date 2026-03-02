@@ -182,7 +182,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let H = normalize(V + L);
     let R = reflect(-V, N);
 
-    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 5.8;
+    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 1.0;
 
     var direct: vec3<f32>;
     {

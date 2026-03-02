@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use wgpu::{ShaderStages, include_wgsl, util::DeviceExt};
+use wgpu::{ShaderStages, util::DeviceExt};
 
 use crate::{
     SizedWindow,
@@ -26,11 +26,15 @@ use crate::{
     },
 };
 
+const ATROUS_PASS_COUNT: usize = 3;
+
 define_shaders! {
     raymarch "../shaders/raymarch.wgsl",
+    shadow "../shaders/shadow.wgsl",
     ambient "../shaders/ambient.wgsl",
     specular "../shaders/specular.wgsl",
     lighting_resolve "../shaders/lighting_resolve.wgsl",
+    atrous "../shaders/atrous.wgsl",
     deferred "../shaders/deferred.wgsl",
     taa "../shaders/taa.wgsl",
     fx "../shaders/fx.wgsl",
@@ -58,6 +62,7 @@ pub struct Renderer {
     quad: Quad,
     frame_id: u32,
     size: glam::UVec2,
+    size_shadow: glam::UVec2,
     render_scale: f32,
     sun_direction: glam::Vec3,
     prev_camera: Option<CameraDataBuffer>,
@@ -65,9 +70,11 @@ pub struct Renderer {
 
 struct Pipelines {
     raymarch: wgpu::ComputePipeline,
+    shadow: wgpu::ComputePipeline,
     ambient: wgpu::ComputePipeline,
     specular: wgpu::ComputePipeline,
     lighting_resolve: wgpu::ComputePipeline,
+    atrous: wgpu::ComputePipeline,
     deferred: wgpu::ComputePipeline,
     taa: wgpu::ComputePipeline,
     fx: wgpu::RenderPipeline,
@@ -78,12 +85,15 @@ struct BindGroupLayouts {
     raymarch_gbuffer: wgpu::BindGroupLayout,
     raymarch_swap: wgpu::BindGroupLayout,
     raymarch_static: wgpu::BindGroupLayout,
+    shadow_gbuffer: wgpu::BindGroupLayout,
     ambient_gbuffer: wgpu::BindGroupLayout,
     ambient_swap: wgpu::BindGroupLayout,
     ambient_static: wgpu::BindGroupLayout,
     specular_gbuffer: wgpu::BindGroupLayout,
     lighting_resolve_gbuffer: wgpu::BindGroupLayout,
     lighting_resolve_swap: wgpu::BindGroupLayout,
+    atrous_per_pass: wgpu::BindGroupLayout,
+    atrous_swap: wgpu::BindGroupLayout,
     deferred_gbuffer: wgpu::BindGroupLayout,
     deferred_swap: wgpu::BindGroupLayout,
     deferred_static: wgpu::BindGroupLayout,
@@ -97,12 +107,17 @@ struct BindGroups {
     raymarch_gbuffer: Option<wgpu::BindGroup>,
     raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
+    shadow_gbuffer: Option<wgpu::BindGroup>,
     ambient_gbuffer: Option<wgpu::BindGroup>,
     ambient_swap: Option<SwapchainBindGroup>,
     ambient_static: wgpu::BindGroup,
     specular_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_swap: Option<SwapchainBindGroup>,
+    atrous_per_pass_primary: Option<SwapchainBindGroup>,
+    atrous_per_pass_secondary: Option<SwapchainBindGroup>,
+    atrous_per_pass: Option<[wgpu::BindGroup; ATROUS_PASS_COUNT - 2]>,
+    atrous_swap: Option<SwapchainBindGroup>,
     deferred_gbuffer: Option<wgpu::BindGroup>,
     deferred_swap: Option<SwapchainBindGroup>,
     deferred_static: wgpu::BindGroup,
@@ -116,9 +131,12 @@ struct Textures {
     gbuffer_normal: Option<SwapchainTexture>,
     gbuffer_depth: Option<SwapchainTexture>,
     gbuffer_velocity: Option<wgpu::Texture>,
+    gbuffer_shadow: Option<wgpu::Texture>,
     gbuffer_illumination: Option<wgpu::Texture>,
     gbuffer_acc_illumination: Option<SwapchainTexture>,
+    gbuffer_acc_illumination_moments: Option<SwapchainTexture>,
     gbuffer_acc_illumination_history_len: Option<SwapchainTexture>,
+    gbuffer_filter_result: Option<SwapchainTexture>,
     gbuffer_specular: Option<wgpu::Texture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
@@ -186,6 +204,11 @@ impl Renderer {
                     sampler().non_filtering(),
                 ),
             ),
+            shadow_gbuffer: device.layout(
+                "shadow_gbuffer",
+                ShaderStages::COMPUTE,
+                storage_texture().r32uint().dimension_2d().write_only(),
+            ),
             ambient_gbuffer: device.layout(
                 "ambient_gbuffer",
                 ShaderStages::COMPUTE,
@@ -222,7 +245,7 @@ impl Renderer {
                 (
                     sampler().filtering(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
-                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
                 ),
             ),
             lighting_resolve_swap: device.layout(
@@ -231,11 +254,31 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().r32uint().dimension_2d().write_only(),
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                ),
+            ),
+            atrous_per_pass: device.layout(
+                "atrous_per_pass",
+                ShaderStages::COMPUTE,
+                (
+                    uniform_buffer(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                ),
+            ),
+            atrous_swap: device.layout(
+                "atrous_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
                 ),
             ),
@@ -307,6 +350,12 @@ impl Renderer {
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
                 ]),
+            shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
+                &bg_layouts.shadow_gbuffer,
+                &bg_layouts.ambient_swap,
+                &bg_layouts.ambient_static,
+                &bg_layouts.per_frame_shared,
+            ]),
             ambient: device
                 .compute_pipeline("ambient", &shaders.ambient)
                 .layout(&[
@@ -330,6 +379,11 @@ impl Renderer {
                     &bg_layouts.lighting_resolve_swap,
                     &bg_layouts.per_frame_shared,
                 ]),
+            atrous: device.compute_pipeline("atrous", &shaders.atrous).layout(&[
+                &bg_layouts.atrous_per_pass,
+                &bg_layouts.atrous_swap,
+                &bg_layouts.per_frame_shared,
+            ]),
             deferred: device
                 .compute_pipeline("deferred", &shaders.deferred)
                 .layout(&[
@@ -389,9 +443,12 @@ impl Renderer {
             gbuffer_normal: None,
             gbuffer_depth: None,
             gbuffer_velocity: None,
+            gbuffer_shadow: None,
             gbuffer_illumination: None,
             gbuffer_acc_illumination: None,
+            gbuffer_acc_illumination_moments: None,
             gbuffer_acc_illumination_history_len: None,
+            gbuffer_filter_result: None,
             gbuffer_specular: None,
             deferred_output: None,
             out_color: None,
@@ -539,6 +596,7 @@ impl Renderer {
                 ],
             }),
             raymarch_swap: None,
+            shadow_gbuffer: None,
             ambient_gbuffer: None,
             ambient_swap: None,
             ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -586,6 +644,10 @@ impl Renderer {
             specular_gbuffer: None,
             lighting_resolve_gbuffer: None,
             lighting_resolve_swap: None,
+            atrous_per_pass_primary: None,
+            atrous_per_pass_secondary: None,
+            atrous_per_pass: None,
+            atrous_swap: None,
             deferred_gbuffer: None,
             deferred_swap: None,
             deferred_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -685,6 +747,7 @@ impl Renderer {
             frame_id: 0,
             render_scale: 1.0,
             size: Default::default(),
+            size_shadow: Default::default(),
             sun_direction: Default::default(),
             prev_camera: None,
         };
@@ -705,6 +768,12 @@ impl Renderer {
         let size = wgpu::Extent3d {
             width: self.size.x,
             height: self.size.y,
+            depth_or_array_layers: 1,
+        };
+        self.size_shadow = glam::uvec2(self.size.x.div_ceil(8), self.size.y.div_ceil(4));
+        let size_shadow = wgpu::Extent3d {
+            width: self.size_shadow.x,
+            height: self.size_shadow.y,
             depth_or_array_layers: 1,
         };
 
@@ -779,6 +848,23 @@ impl Renderer {
                 ..Default::default()
             });
 
+        self.textures.gbuffer_shadow = Some(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gbuffer_shadow"),
+            size: size_shadow,
+            sample_count: 1,
+            format: wgpu::TextureFormat::R32Uint,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        }));
+        let view_gbuffer_shadow = self.textures.gbuffer_shadow.as_ref().unwrap().create_view(
+            &wgpu::TextureViewDescriptor {
+                label: Some("gbuffer_shadow"),
+                ..Default::default()
+            },
+        );
+
         self.textures.gbuffer_illumination =
             Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("gbuffer_illumination"),
@@ -821,6 +907,27 @@ impl Renderer {
                 ..Default::default()
             });
 
+        self.textures.gbuffer_acc_illumination_moments =
+            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_acc_illumination_moments"),
+                size,
+                sample_count: 1,
+                format: wgpu::TextureFormat::Rgba16Float,
+                dimension: wgpu::TextureDimension::D2,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                mip_level_count: 1,
+                view_formats: &[],
+            }));
+        let view_gbuffer_acc_illumination_moments = self
+            .textures
+            .gbuffer_acc_illumination_moments
+            .as_ref()
+            .unwrap()
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("gbuffer_acc_illumination_moments"),
+                ..Default::default()
+            });
+
         self.textures.gbuffer_acc_illumination_history_len =
             Some(device.create_texture_swap(&wgpu::TextureDescriptor {
                 label: Some("gbuffer_acc_illumination_history_len"),
@@ -841,6 +948,24 @@ impl Renderer {
                 label: Some("gbuffer_acc_illumination_history_len"),
                 ..Default::default()
             });
+
+        self.textures.gbuffer_filter_result =
+            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_filter_result"),
+                size,
+                sample_count: 1,
+                format: wgpu::TextureFormat::Rgba16Float,
+                dimension: wgpu::TextureDimension::D2,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                mip_level_count: 1,
+                view_formats: &[],
+            }));
+        let view_gbuffer_filter_result = self
+            .textures
+            .gbuffer_filter_result
+            .as_ref()
+            .unwrap()
+            .create_view(&Default::default());
 
         self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_specular"),
@@ -942,6 +1067,16 @@ impl Renderer {
                 }],
             }));
 
+        self.bind_groups.shadow_gbuffer =
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("shadow_gbuffer"),
+                layout: &self.bg_layouts.shadow_gbuffer,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
+                }],
+            }));
+
         self.bind_groups.ambient_swap = Some(device.create_bind_group_swap(
             &SwapchainBindGroupDescriptor {
                 label: Some("ambient_swap"),
@@ -984,7 +1119,7 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_illumination),
+                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
                     },
                 ],
             }));
@@ -996,6 +1131,9 @@ impl Renderer {
                 entries: &[
                     SwapchainBindGroupEntry {
                         binding: 0,
+                        // resource: SwapchainBindingResource::Single(
+                        //     wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
+                        // ),
                         resource: view_gbuffer_acc_illumination.both(),
                     },
                     SwapchainBindGroupEntry {
@@ -1004,27 +1142,160 @@ impl Renderer {
                     },
                     SwapchainBindGroupEntry {
                         binding: 2,
-                        resource: view_acc_illumination_history_len.both(),
+                        resource: view_gbuffer_acc_illumination_moments.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 3,
-                        resource: view_acc_illumination_history_len.both_reversed(),
+                        resource: view_gbuffer_acc_illumination_moments.both_reversed(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 4,
-                        resource: view_gbuffer_normal.both(),
+                        resource: view_acc_illumination_history_len.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 5,
-                        resource: view_gbuffer_normal.both_reversed(),
+                        resource: view_acc_illumination_history_len.both_reversed(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 6,
-                        resource: view_gbuffer_depth.both(),
+                        resource: view_gbuffer_normal.both(),
                     },
                     SwapchainBindGroupEntry {
                         binding: 7,
+                        resource: view_gbuffer_normal.both_reversed(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 8,
+                        resource: view_gbuffer_depth.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 9,
                         resource: view_gbuffer_depth.both_reversed(),
+                    },
+                ],
+            },
+        ));
+
+        self.bind_groups.atrous_per_pass_primary = Some(
+            device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
+                label: Some("atrous_per_pass_primary"),
+                layout: &self.bg_layouts.atrous_per_pass,
+                entries: &[
+                    SwapchainBindGroupEntry {
+                        binding: 0,
+                        resource: SwapchainBindingResource::Single(
+                            device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("atrous_sample_count"),
+                                    contents: bytemuck::cast_slice(&[1u32]),
+                                    usage: wgpu::BufferUsages::COPY_DST
+                                        | wgpu::BufferUsages::UNIFORM,
+                                })
+                                .as_entire_binding(),
+                        ),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 1,
+                        resource: view_gbuffer_acc_illumination.both(),
+                        // resource: SwapchainBindingResource::Single(
+                        //     wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination.a),
+                        // ),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 2,
+                        // resource: view_gbuffer_acc_illumination.both(),
+                        resource: SwapchainBindingResource::Single(
+                            wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
+                        ),
+                    },
+                ],
+            }),
+        );
+
+        self.bind_groups.atrous_per_pass_secondary = Some(
+            device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
+                label: Some("atrous_per_pass_secondary"),
+                layout: &self.bg_layouts.atrous_per_pass,
+                entries: &[
+                    SwapchainBindGroupEntry {
+                        binding: 0,
+                        resource: SwapchainBindingResource::Single(
+                            device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("atrous_sample_count"),
+                                    contents: bytemuck::cast_slice(&[2u32]),
+                                    usage: wgpu::BufferUsages::COPY_DST
+                                        | wgpu::BufferUsages::UNIFORM,
+                                })
+                                .as_entire_binding(),
+                        ),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 1,
+                        resource: SwapchainBindingResource::Single(
+                            wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
+                        ),
+                        // resource: SwapchainBindingResource::Single(
+                        //     wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination.a),
+                        // ),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 2,
+                        resource: view_gbuffer_acc_illumination.both(),
+                    },
+                ],
+            }),
+        );
+
+        self.bind_groups.atrous_per_pass = Some(std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("atrous_per_pass"),
+                layout: &self.bg_layouts.atrous_per_pass,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("atrous_sample_count"),
+                                contents: bytemuck::cast_slice(&[1u32 << ((i + 2) as u32)]),
+                                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+                            })
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(match i & 1 {
+                            0 => &view_gbuffer_filter_result.b,
+                            _ => &view_gbuffer_filter_result.a,
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(match i & 1 {
+                            0 => &view_gbuffer_filter_result.a,
+                            _ => &view_gbuffer_filter_result.b,
+                        }),
+                    },
+                ],
+            })
+        }));
+
+        self.bind_groups.atrous_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("atrous_swap"),
+                layout: &self.bg_layouts.atrous_swap,
+                entries: &[
+                    SwapchainBindGroupEntry {
+                        binding: 0,
+                        resource: view_acc_illumination_history_len.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 1,
+                        resource: view_gbuffer_normal.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 2,
+                        resource: view_gbuffer_depth.both(),
                     },
                 ],
             },
@@ -1065,7 +1336,16 @@ impl Renderer {
                     },
                     SwapchainBindGroupEntry {
                         binding: 2,
+                        // resource: SwapchainBindingResource::Single(
+                        //     wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
+                        // ),
                         resource: view_gbuffer_acc_illumination.both(),
+                        // resource: SwapchainBindingResource::Single(
+                        //     wgpu::BindingResource::TextureView(match ATROUS_PASS_COUNT & 1 {
+                        //         0 => &view_gbuffer_filter_result.a,
+                        //         _ => &view_gbuffer_filter_result.b,
+                        //     }),
+                        // ),
                     },
                     SwapchainBindGroupEntry {
                         binding: 3,
@@ -1234,19 +1514,33 @@ impl Renderer {
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
-        // ambient pass
+        // shadow pass
         {
-            let mut pass = encoder.begin_compute_pass_timed("Ambient", &mut self.timing);
+            let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.ambient);
-            pass.set_bind_group(0, &self.bind_groups.ambient_gbuffer, &[]);
+            pass.set_pipeline(&self.pipelines.shadow);
+            pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
             pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
             pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("ambient");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+            pass.insert_debug_marker("shadow");
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
         }
+
+        // // ambient pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Ambient", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.ambient);
+        //     pass.set_bind_group(0, &self.bind_groups.ambient_gbuffer, &[]);
+        //     pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
+        //     pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("ambient");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        // }
 
         // specular pass
         // {
@@ -1277,8 +1571,41 @@ impl Renderer {
             pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("lighting_resolve");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
         }
+
+        // denoise pass
+        // for i in 0..ATROUS_PASS_COUNT {
+        //     let label = format!("Denoise_{}", i);
+        //     let mut pass = encoder.begin_compute_pass_timed(&label, &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.atrous);
+        //     if i < 2 {
+        //         pass.set_bind_group_swap(
+        //             0,
+        //             match i {
+        //                 0 => &self.bind_groups.atrous_per_pass_primary,
+        //                 _ => &self.bind_groups.atrous_per_pass_secondary,
+        //             },
+        //             &[],
+        //             self.frame_id,
+        //         );
+        //     } else {
+        //         pass.set_bind_group(
+        //             0,
+        //             self.bind_groups
+        //                 .atrous_per_pass
+        //                 .as_ref()
+        //                 .map(|bg| &bg[i - 2]),
+        //             &[],
+        //         );
+        //     }
+        //     pass.set_bind_group_swap(1, &self.bind_groups.atrous_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("atrous");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        // }
 
         // deferred pass
         {

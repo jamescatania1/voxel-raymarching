@@ -1,15 +1,17 @@
 @group(0) @binding(0) var main_sampler: sampler;
 @group(0) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(2) var tex_cur_illum: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(2) var tex_cur_illum: texture_storage_2d<r32uint, read>;
 
 @group(1) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(1) var tex_acc_illum: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(2) var tex_out_history_len: texture_storage_2d<r32uint, write>;
-@group(1) @binding(3) var tex_acc_history_len: texture_storage_2d<r32uint, read>;
-@group(1) @binding(4) var tex_normal: texture_storage_2d<r32uint, read>;
-@group(1) @binding(5) var tex_prev_normal: texture_storage_2d<r32uint, read>;
-@group(1) @binding(6) var tex_depth: texture_storage_2d<r32float, read>;
-@group(1) @binding(7) var tex_prev_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(2) var tex_out_moments: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(3) var tex_acc_moments: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(4) var tex_out_history_len: texture_storage_2d<r32uint, write>;
+@group(1) @binding(5) var tex_acc_history_len: texture_storage_2d<r32uint, read>;
+@group(1) @binding(6) var tex_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(7) var tex_prev_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(8) var tex_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(9) var tex_prev_depth: texture_storage_2d<r32float, read>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -51,13 +53,22 @@ struct Model {
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_index) index: u32,
+    @builtin(workgroup_id) group_id: vec3<u32>,
 }
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(8, 4, 1)
 fn compute_main(in: ComputeIn) {
     let cur_pos = vec2<i32>(in.id.xy);
-    let cur_color = textureLoad(tex_cur_illum, cur_pos).rgb;
+    
+    let cur_mask = textureLoad(tex_cur_illum, in.group_id.xy).r;
+    let cur_shadow = f32((cur_mask >> in.index) & 1u);
+    let cur_color = vec3<f32>(cur_shadow);
+
     var cur_moments: vec2<f32>;
+
+
+
     cur_moments.r = cur_color.r;
     cur_moments.g = cur_moments.r * cur_moments.r;
 
@@ -71,19 +82,21 @@ fn compute_main(in: ComputeIn) {
         res_color = cur_color;
         res_moments = cur_moments;
         history_len = 1u;
-    }
-    if !acc.reject_history {
+    } else {
         history_len = min(32u, acc.history_len + 1u);
 
         // TODO add clamping parameters to customize each alpha
         let alpha_moments = 1.0 / f32(history_len);
-        // res_moments
+        res_moments = mix(acc.moments, cur_moments, alpha_moments);
 
         let alpha_color = 1.0 / f32(history_len);
         res_color = mix(acc.color, cur_color, alpha_color);
     }
 
-    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, 1.0));
+    let variance = max(0.0, res_moments.g - res_moments.r * res_moments.r);
+
+    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, variance));
+    textureStore(tex_out_moments, cur_pos, vec4<f32>(res_moments, 0.0, 1.0));
     textureStore(tex_out_history_len, cur_pos, vec4<u32>(history_len, 0, 0, 0));
 }
 
@@ -95,11 +108,9 @@ struct ReprojectResult {
 }
 
 fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
-    let dimensions = vec2<i32>(textureDimensions(tex_cur_illum).xy);
+    let dimensions = vec2<i32>(textureDimensions(tex_velocity).xy);
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
-    // let cur_jitter = vec2(0.0);
-    // let acc_jitter = vec2(0.0);
     let cur_jitter = texel_size * select(vec2(0.0), environment.camera.jitter - 0.5, frame.taa_enabled != 0u);
     let acc_jitter = texel_size * select(vec2(0.0), environment.prev_camera.jitter - 0.5, frame.taa_enabled != 0u);
 
@@ -164,10 +175,8 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
             if is_reprojection_valid(cur, acc) {
                 let weight = w[i];
 
-                let val = textureLoad(tex_acc_illum, sample_texel);
-
-                acc_sum += weight * val.rgb;
-                acc_moments += weight * val.ba;
+                acc_sum += weight * textureLoad(tex_acc_illum, sample_texel).rgb;
+                acc_moments += weight * textureLoad(tex_acc_moments, sample_texel).rg;
                 w_sum += weight;
             }
         }
@@ -223,12 +232,12 @@ fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
         return false;
     }
 
-    let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_hit_normal));
-    if plane_distance > 0.3 {
-        return false;
-    }
+    // let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_hit_normal));
+    // if plane_distance > 0.15 {
+    //     return false;
+    // }
 
-    if pow(abs(dot(cur.ws_hit_normal, acc.ws_hit_normal)), 2.0) < 0.8 {
+    if pow(abs(dot(cur.ws_hit_normal, acc.ws_hit_normal)), 2.0) < 1.0 {
         return false;
     }
 
