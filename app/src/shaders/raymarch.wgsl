@@ -13,17 +13,13 @@ struct Palette {
 	data: array<vec4<f32>, 1024>,
 }
 struct IndexChunk {
-	entries: array<IndexEntry, 64>,
-}
-struct IndexEntry {
 	child_index: u32,
-	mask_a: u32,
-	mask_b: u32,
+	mask: array<u32, 2>,
 }
 @group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
 @group(2) @binding(1) var<uniform> palette: Palette;
 @group(2) @binding(2) var<storage, read> index_chunks: array<IndexChunk>;
-@group(2) @binding(3) var leaf_chunks: texture_storage_3d<r32uint, read>;
+@group(2) @binding(3) var<storage, read> leaf_chunks: array<u32>;
 @group(2) @binding(4) var tex_noise: texture_3d<f32>;
 @group(2) @binding(5) var sampler_noise: sampler;
 
@@ -96,6 +92,7 @@ fn trace_scene(pos: vec2<i32>) -> SceneResult {
 	let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
 
+	// let ray = raymarch_basic(start_ray(select(uv_jittered, uv, frame.taa_enabled == 0u)));
 	let ray = raymarch(start_ray(select(uv_jittered, uv, frame.taa_enabled == 0u)));
 
 	if !ray.hit {
@@ -187,37 +184,99 @@ fn raymarch(ray: Ray) -> RaymarchResult {
 	let scale = 1.0 / f32(scene.bounding_size);
 	let origin = ray.ls_origin * scale + (ray.t_start * ray.direction) * scale + 1.0;
 	
-	let dir = ray.direction;
-	let inv_dir = vec3(1.0) / max(vec3(1e-7), abs(dir));
+	var dir = ray.direction;
+	let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
 
 	var pos = clamp(origin, vec3(1.0), vec3(1.9999999));
 
 	var stack: array<u32, 11>;
-	var scale_exp = 21u;
+	var scale_exp = 21;
 
-	var ci = scene.index_chunk_count - 1u;
-	var chunk = &index_chunks[ci];
+	var ci = 0u;
+	var chunk = index_chunks[ci];
 
 	var side_distance: vec3<f32>;
 
 	for (var i = 0u; i < 256; i++) {
-		let child_offset = chunk_offset(pos, scale_exp);
+		var child_offset = chunk_offset(pos, u32(scale_exp));
 
-		let child = (*chunk).entries[child_offset];
-		
+		while (chunk_contains_child(chunk, child_offset) && !chunk_is_leaf(chunk) && scale_exp >= 2) {
+			stack[u32(scale_exp) >> 1u] = ci;
+			ci = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
+			chunk = index_chunks[ci];
+
+			scale_exp -= 2;
+			child_offset = chunk_offset(pos, u32(scale_exp));
+		}
+		if chunk_contains_child(chunk, child_offset) && chunk_is_leaf(chunk) {
+			let leaf_index = mask_packed_offset(chunk.mask, child_offset);
+			
+			let packed = leaf_chunks[(chunk.child_index >> 1u) + leaf_index];
+			
+			let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
+			let t_total = ray.t_start + f32(scene.bounding_size) * t_max;
+			
+			let mask = vec3(t_max) >= side_distance;
+
+			var res: RaymarchResult;
+			res.hit = true;
+			res.voxel = unpack_voxel(packed);
+			res.hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
+			res.depth = t_total;
+			res.local_pos = ray.ls_origin + dir * t_total;
+			res.hit_mask = mask; 
+			return res;
+		}
+
+		let adv_scale_exp = scale_exp;
+		pos = floor_scale(pos, u32(adv_scale_exp));
+		let prev_pos = pos;
+
+		let scale = bitcast<f32>((adv_scale_exp + 104) << 23);
+		side_distance = (step(vec3<f32>(0.0), dir) * scale + (pos - origin)) * inv_dir;
+
+		let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
+
+		// emulate copysign(scale, dir)
+		let scale_mag = bitcast<u32>(scale) & 0x7FFFFFFFu;
+		let dir_signs = bitcast<vec3<u32>>(dir) & vec3<u32>(0x80000000u);
+		let copysign_scale = bitcast<vec3<f32>>(dir_signs | vec3<u32>(scale_mag));
+
+		let tmax_mask = vec3<f32>(t_max) == side_distance;
+		let siblPos0 = select(pos, pos + copysign_scale, tmax_mask);
+
+		let bounds_offset = vec3<i32>(i32((1u << u32(adv_scale_exp)) - 1u));
+		let siblPos1 = bitcast<vec3<f32>>(bitcast<vec3<i32>>(siblPos0) + bounds_offset);
+
+		pos = clamp(origin + (dir * t_max), siblPos0, siblPos1);
+
+		let diffPos = bitcast<vec3<u32>>(pos) ^ bitcast<vec3<u32>>(prev_pos);
+		let combined_diff = diffPos.x | diffPos.y | diffPos.z;
+
+		var diffExp = i32(firstLeadingBit(combined_diff));
+
+		if diffExp % 2 == 0 {
+			diffExp--;
+		}
+
+		// ascend
+		if diffExp > scale_exp {
+			if diffExp > 21 {
+				break;
+			}
+			
+			scale_exp = diffExp;
+			ci = stack[u32(scale_exp) >> 1u];
+			chunk = index_chunks[ci];
+		}
 	}
 
-	var res: RaymarchResult;
-	res.hit = true;
-	res.voxel.palette_index = 1u;
-	res.voxel.metallic = 0.0;
-	res.voxel.roughness = 1.0;
-	return res;
+	return RaymarchResult();
 }
 
 fn mirrored_pos(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
-	var mirrored: vec3<f32> = bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) ^ vec3<u32>(0x7FFFFFu));
-	
+	var mirrored: vec3<f32> = bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) ^ vec3(0x7FFFFFu));
+			
 	if any(pos < vec3<f32>(1.0)) || any(pos >= vec3<f32>(2.0)) {
 		mirrored = 3.0 - pos;
 	}
@@ -225,9 +284,32 @@ fn mirrored_pos(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
 	return select(pos, mirrored, dir > vec3(0.0));
 }
 
+/// computes floor(pos / scale) * scale
+fn floor_scale(pos: vec3<f32>, scale_exp: u32) -> vec3<f32> {
+	let mask = ~0u << scale_exp;
+	return bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) & vec3(mask));
+}
+
 fn chunk_offset(pos: vec3<f32>, scale_exp: u32) -> u32 {
-	let chunk_pos = bitcast<vec3<u32>>(pos) >> (scale_exp & 3u);
-	return (chunk_pos.z << 4u) | (chunk_pos.y << 2u) | chunk_pos.x;
+    let chunk_pos = (bitcast<vec3<u32>>(pos) >> vec3(scale_exp)) & vec3(3u);
+    return (chunk_pos.y << 4u) | (chunk_pos.z << 2u) | chunk_pos.x;
+}
+
+fn chunk_contains_child(chunk: IndexChunk, offset: u32) -> bool {
+	return (chunk.mask[offset >> 5u] & (1u << (offset & 31u))) != 0u;
+}
+
+/// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i 
+fn mask_packed_offset(mask: array<u32, 2>, i: u32) -> u32 {
+    if i < 32u {
+        return countOneBits(mask[0] & ~(0xffffffffu << i));
+    } else {
+        return countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u)));
+    }
+}
+
+fn chunk_is_leaf(chunk: IndexChunk) -> bool {
+	return (chunk.child_index & 1u) == 1u;
 }
 
 // fn raymarch(ray: Ray) -> RaymarchResult {
@@ -388,6 +470,7 @@ fn start_ray(uv: vec2<f32>) -> Ray {
 	let t_start = max(0.0, t_near + 1e-7);
 
 	var ray: Ray;
+	ray.origin = ls_origin + t_start * ls_direction;
 	ray.ls_origin = ls_origin;
 	ray.direction = ls_direction;
 	ray.t_start = t_start;

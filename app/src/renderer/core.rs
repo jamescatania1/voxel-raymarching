@@ -140,7 +140,6 @@ struct Textures {
     gbuffer_specular: Option<wgpu::Texture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
-    leaf_chunks: wgpu::Texture,
     noise_cos_hemisphere_gauss: wgpu::Texture,
     noise_uniform_gauss: wgpu::Texture,
 }
@@ -153,7 +152,8 @@ struct Samplers {
 struct Buffers {
     voxel_scene_metadata: wgpu::Buffer,
     voxel_palette: wgpu::Buffer,
-    index_chunks: wgpu::Buffer,
+    voxel_index_chunks: wgpu::Buffer,
+    voxel_leaf_chunks: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
     environment: wgpu::Buffer,
     model: wgpu::Buffer,
@@ -197,7 +197,7 @@ impl Renderer {
                     uniform_buffer(),
                     uniform_buffer(),
                     storage_buffer().read_only(),
-                    storage_texture().r32uint().dimension_3d().read_only(),
+                    storage_buffer().read_only(),
                     texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
                 ),
@@ -450,7 +450,6 @@ impl Renderer {
             gbuffer_specular: None,
             deferred_output: None,
             out_color: None,
-            leaf_chunks: scene.data.tex_leaf_chunks,
             noise_cos_hemisphere_gauss: noise::noise_cos_hemisphere_gauss(device, queue).unwrap(),
             noise_uniform_gauss: noise::noise_uniform_gauss(device, queue).unwrap(),
         };
@@ -498,7 +497,8 @@ impl Renderer {
                 })
             },
             voxel_palette: scene.data.buffer_palette,
-            index_chunks: scene.data.buffer_index_chunks,
+            voxel_index_chunks: scene.data.buffer_index_chunks,
+            voxel_leaf_chunks: scene.data.buffer_leaf_chunks,
 
             environment: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("environment"),
@@ -554,19 +554,11 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: buffers.index_chunks.as_entire_binding(),
+                        resource: buffers.voxel_index_chunks.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures
-                                .leaf_chunks
-                                .create_view(&wgpu::TextureViewDescriptor {
-                                    label: Some("leaf_chunks"),
-                                    usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
-                                    ..Default::default()
-                                }),
-                        ),
+                        resource: buffers.voxel_leaf_chunks.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,

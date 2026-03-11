@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use flate2::write::ZlibEncoder;
-use generate::{LIGHTMAP_FILE_EXT, MODEL_FILE_EXT, generate_lighting, voxelize};
+use generate::{
+    LIGHTMAP_FILE_EXT, MAX_STORAGE_BUFFER_BINDING_SIZE, MODEL_FILE_EXT, generate_lighting, voxelize,
+};
 use std::{
     fs,
     io::{self, Seek, Write},
@@ -108,6 +110,7 @@ fn init_device() -> Result<(wgpu::Device, wgpu::Queue)> {
     limits.max_binding_array_elements_per_shader_stage = 260;
     limits.max_storage_textures_per_shader_stage = 6;
     limits.max_compute_invocations_per_workgroup = 512;
+    limits.max_storage_buffer_binding_size = MAX_STORAGE_BUFFER_BINDING_SIZE;
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         required_features: features,
