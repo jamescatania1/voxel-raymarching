@@ -58,7 +58,7 @@ struct ComputeIn {
     @builtin(workgroup_id) group_id: vec3<u32>,
 }
 
-var<workgroup> horizontal_means: array<array<u32, 24>, 8>;
+var<workgroup> horizontal_masks: array<array<u32, 24>, 8>;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
@@ -69,20 +69,26 @@ fn compute_main(in: ComputeIn) {
         let base = in.group_id.y << 1u;
         let tile = i32(base + in.thread_id.y) - 2;
 
-        let slice = gather_horizontal_means(in.id.x, u32(tile));
+        let slice = gather_horizontal_masks(in.id.x, u32(tile));
 
         for (var y = 0u; y < 4u; y++) {
-            horizontal_means[in.thread_id.x][(in.thread_id.y << 2u) + y] = slice[y];
+            horizontal_masks[in.thread_id.x][(in.thread_id.y << 2u) + y] = slice[y];
         }
     }
 
     workgroupBarrier();
 
+    if environment.filter_shadows == 0u {
+        let shadow = (horizontal_masks[in.thread_id.x][in.thread_id.y + 8u] >> 8u) & 1u;
+        textureStore(tex_out_illum, cur_pos, vec4<f32>(f32(shadow), 1.0, 1.0, 1.0));
+        return;
+    }
+
     var cur = 0.0;
     var mu = 0.0;
 
     for (var i = 0u; i < 17u; i++) {
-        let nbr_mask = horizontal_means[in.thread_id.x][i + in.thread_id.y];
+        let nbr_mask = horizontal_masks[in.thread_id.x][i + in.thread_id.y];
         let nbr_count = countOneBits(nbr_mask);
 
         mu += f32(nbr_count) / 17.0;
@@ -140,7 +146,7 @@ fn compute_main(in: ComputeIn) {
     textureStore(tex_out_history_len, cur_pos, vec4<u32>(history_len, 0, 0, 0));
 }
 
-fn gather_horizontal_means(pos_x: u32, tile_y: u32) -> array<u32, 4> {
+fn gather_horizontal_masks(pos_x: u32, tile_y: u32) -> array<u32, 4> {
     let dimensions = textureDimensions(tex_velocity);
 
     let base = vec2(pos_x >> 3u, tile_y);
@@ -164,9 +170,6 @@ fn gather_horizontal_means(pos_x: u32, tile_y: u32) -> array<u32, 4> {
         let window = (mask >> (7 - x)) & 0x1FFFFu;
 
         res[y] = window;
-
-        // let count = countOneBits(window);
-        // res[y] = f32(count) / 17.0;
     }
     return res;
 }

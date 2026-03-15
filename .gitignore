@@ -1,2 +1,9 @@
 /target
 *.glb
+!app/assets/models/sponza.voxel
+*.hdr
+!app/assets/lightmaps/partly_cloudy.hdr
+*.voxel
+!app/assets/generated/sponza.voxel
+*.lightmap
+!app/assets/generated/partly_cloudy.lightmap

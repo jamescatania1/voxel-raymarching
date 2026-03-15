@@ -58,14 +58,11 @@ pub fn noise_uniform_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result
     Ok(res)
 }
 
-pub fn noise_cos_hemisphere_gauss(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> Result<wgpu::Texture> {
+pub fn noise_sphere_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
     macro_rules! include_images {
         ($($n:expr),*) => {
             [
-                $(std::include_bytes!(concat!("../../assets/noise/sphere_coshemi_gauss1_0_exp0101_separate05_", $n, ".png"))),*
+                $(std::include_bytes!(concat!("../../assets/noise/sphere_uniform_gauss1_0_exp0101_separate05_", $n, ".png"))),*
             ]
         }
     }

@@ -18,9 +18,8 @@ struct IndexChunk {
 @group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
 @group(2) @binding(1) var<uniform> palette: Palette;
 @group(2) @binding(2) var<storage, read> index_chunks: array<IndexChunk>;
-@group(2) @binding(3) var<storage, read> leaf_chunks: array<u32>;
-@group(2) @binding(4) var tex_noise: texture_3d<f32>;
-@group(2) @binding(5) var sampler_noise: sampler;
+@group(2) @binding(3) var tex_noise: texture_3d<f32>;
+@group(2) @binding(4) var sampler_noise: sampler;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -121,10 +120,7 @@ fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: 
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
     let light_bitangent = normalize(cross(light_tangent, light_dir));
 
-    let radius: f32 = 1.0 * environment.shadow_spread;
-
-    // let point_radius = radius * sqrt(noise.x);
-    let disk_point = noise.xy * radius;
+    let disk_point = (noise.xy * 2.0 - 1.0) * environment.shadow_spread;
     let dir = normalize(light_dir + disk_point.x * light_tangent + disk_point.y * light_bitangent);
 
 
@@ -181,7 +177,7 @@ fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
 	origin = mirrored_pos(origin, dir);
 
 	var pos = clamp(origin, vec3(1.0), vec3(1.9999999));
-	
+
 	var mirror_mask = 0u;
 	mirror_mask |= select(0u, 3u, dir.x > 0.0) << 0u;
 	mirror_mask |= select(0u, 3u, dir.y > 0.0) << 4u;
@@ -235,7 +231,7 @@ fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
 			if diff_exp > 21 {
 				break;
 			}
-			
+
 			ci = stack[local_index][scale_exp >> 1u];
 			chunk = index_chunks[ci];
 		}
@@ -249,7 +245,7 @@ fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
 
 fn mirrored_pos(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
 	var mirrored: vec3<f32> = bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) ^ vec3(0x7FFFFFu));
-	
+
 	if any(pos < vec3<f32>(1.0)) || any(pos >= vec3<f32>(2.0)) {
 		mirrored = 3.0 - pos;
 	}
@@ -277,7 +273,7 @@ fn chunk_contains_child(mask: array<u32, 2>, offset: u32) -> bool {
 	return (half_mask & (1u << (offset & 31u))) != 0u;
 }
 
-/// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i 
+/// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i
 fn mask_packed_offset(mask: array<u32, 2>, i: u32) -> u32 {
     if i < 32u {
         return countOneBits(mask[0] & ~(0xffffffffu << i));

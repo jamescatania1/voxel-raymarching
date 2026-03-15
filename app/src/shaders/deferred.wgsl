@@ -12,11 +12,10 @@ override dielectric_specular: f32 = 0.04;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
-@group(2) @binding(2) var tex_noise: texture_2d<f32>;
-@group(2) @binding(3) var tex_skybox: texture_cube<f32>;
-@group(2) @binding(4) var tex_irradiance: texture_cube<f32>;
-@group(2) @binding(5) var tex_prefilter: texture_cube<f32>;
-@group(2) @binding(6) var tex_brdf_lut: texture_2d<f32>;
+@group(2) @binding(2) var tex_skybox: texture_cube<f32>;
+@group(2) @binding(3) var tex_irradiance: texture_cube<f32>;
+@group(2) @binding(4) var tex_prefilter: texture_cube<f32>;
+@group(2) @binding(5) var tex_brdf_lut: texture_2d<f32>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -81,8 +80,6 @@ fn compute_main(in: ComputeIn) {
     let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
     let voxel = unpack_voxel(packed);
-
-    let noise = blue_noise(in.id.xy);
 
     let albedo_sample = textureLoad(tex_albedo, pos);
     let albedo = albedo_sample.rgb;
@@ -355,12 +352,6 @@ fn primary_ray(uv: vec2<f32>) -> Ray {
     ray.ls_origin = ls_origin;
     ray.direction = ls_direction;
     return ray;
-}
-
-fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
-    let noise_pos = vec2<u32>(pos.x & 0x7fu, pos.y & 0x7fu);
-    let noise = textureLoad(tex_noise, vec2<i32>(noise_pos), 0).rgb;
-    return noise;
 }
 
 struct Voxel {

@@ -110,7 +110,7 @@ struct BindGroups {
     shadow_gbuffer: Option<wgpu::BindGroup>,
     ambient_gbuffer: Option<wgpu::BindGroup>,
     ambient_swap: Option<SwapchainBindGroup>,
-    // ambient_static: wgpu::BindGroup,
+    ambient_static: wgpu::BindGroup,
     specular_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_swap: Option<SwapchainBindGroup>,
@@ -140,8 +140,7 @@ struct Textures {
     gbuffer_specular: Option<wgpu::Texture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
-    noise_cos_hemisphere_gauss: wgpu::Texture,
-    noise_uniform_gauss: wgpu::Texture,
+    noise_sphere_gauss: wgpu::Texture,
 }
 
 struct Samplers {
@@ -227,7 +226,6 @@ impl Renderer {
                     uniform_buffer(),
                     uniform_buffer(),
                     storage_buffer().read_only(),
-                    storage_buffer().read_only(),
                     texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
                 ),
@@ -305,7 +303,6 @@ impl Renderer {
                 (
                     sampler().filtering(),
                     sampler().non_filtering(),
-                    texture().unfilterable_float().dimension_2d(),
                     texture().float().dimension_cube(),
                     texture().float().dimension_cube(),
                     texture().float().dimension_cube(),
@@ -351,7 +348,7 @@ impl Renderer {
             shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
                 &bg_layouts.shadow_gbuffer,
                 &bg_layouts.ambient_swap,
-                &bg_layouts.raymarch_static,
+                &bg_layouts.ambient_static,
                 &bg_layouts.per_frame_shared,
             ]),
             // ambient: device
@@ -433,7 +430,7 @@ impl Renderer {
         };
 
         // see build script
-        let scene = MODELS.bistro.load(device, queue).unwrap();
+        let scene = MODELS.sponza.load(device, queue).unwrap();
         let ibl = LIGHTMAPS.partly_cloudy.load(device, queue).unwrap();
 
         let textures = Textures {
@@ -450,8 +447,7 @@ impl Renderer {
             gbuffer_specular: None,
             deferred_output: None,
             out_color: None,
-            noise_cos_hemisphere_gauss: noise::noise_cos_hemisphere_gauss(device, queue).unwrap(),
-            noise_uniform_gauss: noise::noise_uniform_gauss(device, queue).unwrap(),
+            noise_sphere_gauss: noise::noise_sphere_gauss(device, queue).unwrap(),
         };
 
         let samplers = Samplers {
@@ -563,11 +559,7 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_cos_hemisphere_gauss.create_view(
-                                &wgpu::TextureViewDescriptor {
-                                    ..Default::default()
-                                },
-                            ),
+                            &textures.noise_sphere_gauss.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -580,48 +572,34 @@ impl Renderer {
             shadow_gbuffer: None,
             ambient_gbuffer: None,
             ambient_swap: None,
-            // ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-            //     label: Some("ambient_static"),
-            //     layout: &bg_layouts.ambient_static,
-            //     entries: &[
-            //         wgpu::BindGroupEntry {
-            //             binding: 0,
-            //             resource: buffers.voxel_scene_metadata.as_entire_binding(),
-            //         },
-            //         wgpu::BindGroupEntry {
-            //             binding: 1,
-            //             resource: buffers.voxel_palette.as_entire_binding(),
-            //         },
-            //         wgpu::BindGroupEntry {
-            //             binding: 2,
-            //             resource: buffers.index_chunks.as_entire_binding(),
-            //         },
-            //         wgpu::BindGroupEntry {
-            //             binding: 3,
-            //             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            //                 buffer: &buffers.voxel_chunks,
-            //                 offset: 0,
-            //                 size: std::num::NonZeroU64::new(
-            //                     (scene.meta.allocated_chunks * 64) as u64,
-            //                 ),
-            //             }),
-            //         },
-            //         wgpu::BindGroupEntry {
-            //             binding: 4,
-            //             resource: wgpu::BindingResource::TextureView(
-            //                 &textures.noise_cos_hemisphere_gauss.create_view(
-            //                     &wgpu::TextureViewDescriptor {
-            //                         ..Default::default()
-            //                     },
-            //                 ),
-            //             ),
-            //         },
-            //         wgpu::BindGroupEntry {
-            //             binding: 5,
-            //             resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-            //         },
-            //     ],
-            // }),
+            ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ambient_static"),
+                layout: &bg_layouts.ambient_static,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.voxel_palette.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: buffers.voxel_index_chunks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures.noise_sphere_gauss.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
+                    },
+                ],
+            }),
             specular_gbuffer: None,
             lighting_resolve_gbuffer: None,
             lighting_resolve_swap: None,
@@ -645,16 +623,6 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_uniform_gauss.create_view(
-                                &wgpu::TextureViewDescriptor {
-                                    ..Default::default()
-                                },
-                            ),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
                         resource: wgpu::BindingResource::TextureView(&ibl.cubemap.create_view(
                             &wgpu::TextureViewDescriptor {
                                 label: Some("skybox"),
@@ -665,7 +633,7 @@ impl Renderer {
                         )),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 4,
+                        binding: 3,
                         resource: wgpu::BindingResource::TextureView(&ibl.irradiance.create_view(
                             &wgpu::TextureViewDescriptor {
                                 label: Some("irradiance"),
@@ -676,7 +644,7 @@ impl Renderer {
                         )),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 5,
+                        binding: 4,
                         resource: wgpu::BindingResource::TextureView(&ibl.prefilter.create_view(
                             &wgpu::TextureViewDescriptor {
                                 label: Some("prefilter"),
@@ -687,7 +655,7 @@ impl Renderer {
                         )),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 6,
+                        binding: 5,
                         resource: wgpu::BindingResource::TextureView(&ibl.brdf.create_view(
                             &wgpu::TextureViewDescriptor {
                                 label: Some("brdf"),
@@ -1504,7 +1472,7 @@ impl Renderer {
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
             pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
-            pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
+            pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("shadow");
