@@ -10,7 +10,9 @@ use crate::{
     lightmap::LIGHTMAPS,
     models::MODELS,
     renderer::{
-        buffers::{self, CameraDataBuffer, EnvironmentDataBuffer, ModelDataBuffer},
+        buffers::{
+            self, CameraDataBuffer, EnvironmentDataBuffer, ModelDataBuffer, VoxelMapInfoBuffer,
+        },
         noise,
         quad::Quad,
         timing::{RenderTimer, TimedEncoder},
@@ -73,7 +75,7 @@ struct Pipelines {
     shadow: wgpu::ComputePipeline,
     // ambient: wgpu::ComputePipeline,
     // specular: wgpu::ComputePipeline,
-    lighting_resolve: wgpu::ComputePipeline,
+    // lighting_resolve: wgpu::ComputePipeline,
     // atrous: wgpu::ComputePipeline,
     deferred: wgpu::ComputePipeline,
     taa: wgpu::ComputePipeline,
@@ -86,14 +88,14 @@ struct BindGroupLayouts {
     raymarch_swap: wgpu::BindGroupLayout,
     raymarch_static: wgpu::BindGroupLayout,
     shadow_gbuffer: wgpu::BindGroupLayout,
-    ambient_gbuffer: wgpu::BindGroupLayout,
-    ambient_swap: wgpu::BindGroupLayout,
-    ambient_static: wgpu::BindGroupLayout,
-    specular_gbuffer: wgpu::BindGroupLayout,
-    lighting_resolve_gbuffer: wgpu::BindGroupLayout,
-    lighting_resolve_swap: wgpu::BindGroupLayout,
-    atrous_per_pass: wgpu::BindGroupLayout,
-    atrous_swap: wgpu::BindGroupLayout,
+    // ambient_gbuffer: wgpu::BindGroupLayout,
+    shadow_swap: wgpu::BindGroupLayout,
+    shadow_static: wgpu::BindGroupLayout,
+    // specular_gbuffer: wgpu::BindGroupLayout,
+    // lighting_resolve_gbuffer: wgpu::BindGroupLayout,
+    // lighting_resolve_swap: wgpu::BindGroupLayout,
+    // atrous_per_pass: wgpu::BindGroupLayout,
+    // atrous_swap: wgpu::BindGroupLayout,
     deferred_gbuffer: wgpu::BindGroupLayout,
     deferred_swap: wgpu::BindGroupLayout,
     deferred_static: wgpu::BindGroupLayout,
@@ -108,16 +110,16 @@ struct BindGroups {
     raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
     shadow_gbuffer: Option<wgpu::BindGroup>,
-    ambient_gbuffer: Option<wgpu::BindGroup>,
-    ambient_swap: Option<SwapchainBindGroup>,
-    ambient_static: wgpu::BindGroup,
-    specular_gbuffer: Option<wgpu::BindGroup>,
-    lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
-    lighting_resolve_swap: Option<SwapchainBindGroup>,
-    atrous_per_pass_primary: Option<SwapchainBindGroup>,
-    atrous_per_pass_secondary: Option<SwapchainBindGroup>,
-    atrous_per_pass: Option<[wgpu::BindGroup; ATROUS_PASS_COUNT - 2]>,
-    atrous_swap: Option<SwapchainBindGroup>,
+    // ambient_gbuffer: Option<wgpu::BindGroup>,
+    shadow_swap: Option<SwapchainBindGroup>,
+    shadow_static: wgpu::BindGroup,
+    // specular_gbuffer: Option<wgpu::BindGroup>,
+    // lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
+    // lighting_resolve_swap: Option<SwapchainBindGroup>,
+    // atrous_per_pass_primary: Option<SwapchainBindGroup>,
+    // atrous_per_pass_secondary: Option<SwapchainBindGroup>,
+    // atrous_per_pass: Option<[wgpu::BindGroup; ATROUS_PASS_COUNT - 2]>,
+    // atrous_swap: Option<SwapchainBindGroup>,
     deferred_gbuffer: Option<wgpu::BindGroup>,
     deferred_swap: Option<SwapchainBindGroup>,
     deferred_static: wgpu::BindGroup,
@@ -128,16 +130,17 @@ struct BindGroups {
 
 struct Textures {
     gbuffer_albedo: Option<wgpu::Texture>,
+    gbuffer_voxel_id: Option<wgpu::Texture>,
     gbuffer_normal: Option<SwapchainTexture>,
     gbuffer_depth: Option<SwapchainTexture>,
     gbuffer_velocity: Option<wgpu::Texture>,
-    gbuffer_shadow: Option<wgpu::Texture>,
-    gbuffer_illumination: Option<wgpu::Texture>,
-    gbuffer_acc_illumination: Option<SwapchainTexture>,
-    gbuffer_acc_illumination_moments: Option<SwapchainTexture>,
-    gbuffer_acc_illumination_history_len: Option<SwapchainTexture>,
-    gbuffer_filter_result: Option<SwapchainTexture>,
-    gbuffer_specular: Option<wgpu::Texture>,
+    // gbuffer_shadow: Option<wgpu::Texture>,
+    // gbuffer_illumination: Option<wgpu::Texture>,
+    // gbuffer_acc_illumination: Option<SwapchainTexture>,
+    // gbuffer_acc_illumination_moments: Option<SwapchainTexture>,
+    // gbuffer_acc_illumination_history_len: Option<SwapchainTexture>,
+    // gbuffer_filter_result: Option<SwapchainTexture>,
+    // gbuffer_specular: Option<wgpu::Texture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
     noise_sphere_gauss: wgpu::Texture,
@@ -153,6 +156,11 @@ struct Buffers {
     voxel_palette: wgpu::Buffer,
     voxel_index_chunks: wgpu::Buffer,
     voxel_leaf_chunks: wgpu::Buffer,
+    voxel_index_leaf_positions: wgpu::Buffer,
+    voxel_map_info: wgpu::Buffer,
+    voxel_map: wgpu::Buffer,
+    voxel_visibility_mask: wgpu::Buffer,
+    voxel_lighting: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
     environment: wgpu::Buffer,
     model: wgpu::Buffer,
@@ -179,6 +187,7 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().r32uint().dimension_2d().write_only(),
                 ),
             ),
             raymarch_swap: device.layout(
@@ -199,85 +208,90 @@ impl Renderer {
                     storage_buffer().read_only(),
                     texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
+                    storage_buffer().read_write(),
+                    storage_buffer().read_write(),
+                    storage_buffer().read_write(),
                 ),
             ),
             shadow_gbuffer: device.layout(
                 "shadow_gbuffer",
                 ShaderStages::COMPUTE,
-                storage_texture().r32uint().dimension_2d().write_only(),
+                storage_texture().r32uint().dimension_2d().read_only(),
             ),
-            ambient_gbuffer: device.layout(
-                "ambient_gbuffer",
-                ShaderStages::COMPUTE,
-                storage_texture().rgba16float().dimension_2d().write_only(),
-            ),
-            ambient_swap: device.layout(
-                "ambient_swap",
+            // ambient_gbuffer: device.layout(
+            //     "ambient_gbuffer",
+            //     ShaderStages::COMPUTE,
+            //     storage_texture().r32uint().dimension_2d().read_only(),
+            // ),
+            shadow_swap: device.layout(
+                "shadow_swap",
                 ShaderStages::COMPUTE,
                 (
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
                 ),
             ),
-            ambient_static: device.layout(
-                "ambient_static",
+            shadow_static: device.layout(
+                "shadow_static",
                 ShaderStages::COMPUTE,
                 (
                     uniform_buffer(),
-                    uniform_buffer(),
+                    storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_write(),
                 ),
             ),
-            specular_gbuffer: device.layout(
-                "specular_gbuffer",
-                ShaderStages::COMPUTE,
-                storage_texture().rgba16float().dimension_2d().write_only(),
-            ),
-            lighting_resolve_gbuffer: device.layout(
-                "lighting_resolve_gbuffer",
-                ShaderStages::COMPUTE,
-                (
-                    sampler().filtering(),
-                    storage_texture().rgba16float().dimension_2d().read_only(),
-                    storage_texture().r32uint().dimension_2d().read_only(),
-                ),
-            ),
-            lighting_resolve_swap: device.layout(
-                "lighting_resolve_swap",
-                ShaderStages::COMPUTE,
-                (
-                    storage_texture().rgba16float().dimension_2d().write_only(),
-                    storage_texture().rgba16float().dimension_2d().read_only(),
-                    storage_texture().rgba16float().dimension_2d().write_only(),
-                    storage_texture().rgba16float().dimension_2d().read_only(),
-                    storage_texture().r32uint().dimension_2d().write_only(),
-                    storage_texture().r32uint().dimension_2d().read_only(),
-                    storage_texture().r32uint().dimension_2d().read_only(),
-                    storage_texture().r32uint().dimension_2d().read_only(),
-                    storage_texture().r32float().dimension_2d().read_only(),
-                    storage_texture().r32float().dimension_2d().read_only(),
-                ),
-            ),
-            atrous_per_pass: device.layout(
-                "atrous_per_pass",
-                ShaderStages::COMPUTE,
-                (
-                    uniform_buffer(),
-                    storage_texture().rgba16float().dimension_2d().write_only(),
-                    storage_texture().rgba16float().dimension_2d().read_only(),
-                ),
-            ),
-            atrous_swap: device.layout(
-                "atrous_swap",
-                ShaderStages::COMPUTE,
-                (
-                    storage_texture().r32uint().dimension_2d().read_only(),
-                    storage_texture().r32uint().dimension_2d().read_only(),
-                    storage_texture().r32float().dimension_2d().read_only(),
-                ),
-            ),
+            // specular_gbuffer: device.layout(
+            //     "specular_gbuffer",
+            //     ShaderStages::COMPUTE,
+            //     storage_texture().rgba16float().dimension_2d().write_only(),
+            // ),
+            // lighting_resolve_gbuffer: device.layout(
+            //     "lighting_resolve_gbuffer",
+            //     ShaderStages::COMPUTE,
+            //     (
+            //         sampler().filtering(),
+            //         storage_texture().rgba16float().dimension_2d().read_only(),
+            //         storage_texture().r32uint().dimension_2d().read_only(),
+            //     ),
+            // ),
+            // lighting_resolve_swap: device.layout(
+            //     "lighting_resolve_swap",
+            //     ShaderStages::COMPUTE,
+            //     (
+            //         storage_texture().rgba16float().dimension_2d().write_only(),
+            //         storage_texture().rgba16float().dimension_2d().read_only(),
+            //         storage_texture().rgba16float().dimension_2d().write_only(),
+            //         storage_texture().rgba16float().dimension_2d().read_only(),
+            //         storage_texture().r32uint().dimension_2d().write_only(),
+            //         storage_texture().r32uint().dimension_2d().read_only(),
+            //         storage_texture().r32uint().dimension_2d().read_only(),
+            //         storage_texture().r32uint().dimension_2d().read_only(),
+            //         storage_texture().r32float().dimension_2d().read_only(),
+            //         storage_texture().r32float().dimension_2d().read_only(),
+            //     ),
+            // ),
+            // atrous_per_pass: device.layout(
+            //     "atrous_per_pass",
+            //     ShaderStages::COMPUTE,
+            //     (
+            //         uniform_buffer(),
+            //         storage_texture().rgba16float().dimension_2d().write_only(),
+            //         storage_texture().rgba16float().dimension_2d().read_only(),
+            //     ),
+            // ),
+            // atrous_swap: device.layout(
+            //     "atrous_swap",
+            //     ShaderStages::COMPUTE,
+            //     (
+            //         storage_texture().r32uint().dimension_2d().read_only(),
+            //         storage_texture().r32uint().dimension_2d().read_only(),
+            //         storage_texture().r32float().dimension_2d().read_only(),
+            //     ),
+            // ),
             deferred_gbuffer: device.layout(
                 "deferred_gbuffer",
                 ShaderStages::COMPUTE,
@@ -285,6 +299,7 @@ impl Renderer {
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
                 ),
             ),
             deferred_swap: device.layout(
@@ -293,8 +308,8 @@ impl Renderer {
                 (
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
-                    texture().float().dimension_2d(),
-                    texture().float().dimension_2d(),
+                    // texture().float().dimension_2d(),
+                    // texture().float().dimension_2d(),
                 ),
             ),
             deferred_static: device.layout(
@@ -307,6 +322,8 @@ impl Renderer {
                     texture().float().dimension_cube(),
                     texture().float().dimension_cube(),
                     texture().float().dimension_2d(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
                 ),
             ),
             taa_input: device.layout(
@@ -347,8 +364,8 @@ impl Renderer {
                 ]),
             shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
                 &bg_layouts.shadow_gbuffer,
-                &bg_layouts.ambient_swap,
-                &bg_layouts.ambient_static,
+                &bg_layouts.shadow_swap,
+                &bg_layouts.shadow_static,
                 &bg_layouts.per_frame_shared,
             ]),
             // ambient: device
@@ -367,13 +384,13 @@ impl Renderer {
             //         &bg_layouts.raymarch_static,
             //         &bg_layouts.per_frame_shared,
             //     ]),
-            lighting_resolve: device
-                .compute_pipeline("lighting_resolve", &shaders.lighting_resolve)
-                .layout(&[
-                    &bg_layouts.lighting_resolve_gbuffer,
-                    &bg_layouts.lighting_resolve_swap,
-                    &bg_layouts.per_frame_shared,
-                ]),
+            // lighting_resolve: device
+            //     .compute_pipeline("lighting_resolve", &shaders.lighting_resolve)
+            //     .layout(&[
+            //         &bg_layouts.lighting_resolve_gbuffer,
+            //         &bg_layouts.lighting_resolve_swap,
+            //         &bg_layouts.per_frame_shared,
+            //     ]),
             // atrous: device.compute_pipeline("atrous", &shaders.atrous).layout(&[
             //     &bg_layouts.atrous_per_pass,
             //     &bg_layouts.atrous_swap,
@@ -430,21 +447,22 @@ impl Renderer {
         };
 
         // see build script
-        let scene = MODELS.sponza.load(device, queue).unwrap();
+        let scene = MODELS.bistro.load(device, queue).unwrap();
         let ibl = LIGHTMAPS.partly_cloudy.load(device, queue).unwrap();
 
         let textures = Textures {
             gbuffer_albedo: None,
+            gbuffer_voxel_id: None,
             gbuffer_normal: None,
             gbuffer_depth: None,
             gbuffer_velocity: None,
-            gbuffer_shadow: None,
-            gbuffer_illumination: None,
-            gbuffer_acc_illumination: None,
-            gbuffer_acc_illumination_moments: None,
-            gbuffer_acc_illumination_history_len: None,
-            gbuffer_filter_result: None,
-            gbuffer_specular: None,
+            // gbuffer_shadow: None,
+            // gbuffer_illumination: None,
+            // gbuffer_acc_illumination: None,
+            // gbuffer_acc_illumination_moments: None,
+            // gbuffer_acc_illumination_history_len: None,
+            // gbuffer_filter_result: None,
+            // gbuffer_specular: None,
             deferred_output: None,
             out_color: None,
             noise_sphere_gauss: noise::noise_sphere_gauss(device, queue).unwrap(),
@@ -473,6 +491,11 @@ impl Renderer {
             }),
         };
 
+        let leaf_chunks_size = scene.data.buffer_leaf_chunks.size();
+        let visiblity_mask_size = leaf_chunks_size.div_ceil(32).next_multiple_of(4);
+        let voxel_map_size = leaf_chunks_size; // crude af should be dynamic and smaller
+        let voxel_lighting_size = voxel_map_size.div_ceil(2).next_multiple_of(4);
+
         let buffers = Buffers {
             voxel_scene_metadata: {
                 #[repr(C)]
@@ -495,6 +518,33 @@ impl Renderer {
             voxel_palette: scene.data.buffer_palette,
             voxel_index_chunks: scene.data.buffer_index_chunks,
             voxel_leaf_chunks: scene.data.buffer_leaf_chunks,
+            voxel_index_leaf_positions: scene.data.buffer_index_leaf_positions,
+            voxel_map_info: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_map_info"),
+                size: std::mem::size_of::<VoxelMapInfoBuffer>() as u64,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            voxel_visibility_mask: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_visibility_mask"),
+                size: visiblity_mask_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            voxel_map: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_map"),
+                size: voxel_map_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_lighting"),
+                size: voxel_lighting_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
 
             environment: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("environment"),
@@ -566,15 +616,27 @@ impl Renderer {
                         binding: 5,
                         resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.voxel_map_info.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: buffers.voxel_visibility_mask.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: buffers.voxel_map.as_entire_binding(),
+                    },
                 ],
             }),
             raymarch_swap: None,
             shadow_gbuffer: None,
-            ambient_gbuffer: None,
-            ambient_swap: None,
-            ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
+            // ambient_gbuffer: None,
+            shadow_swap: None,
+            shadow_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ambient_static"),
-                layout: &bg_layouts.ambient_static,
+                layout: &bg_layouts.shadow_static,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -582,11 +644,11 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: buffers.voxel_palette.as_entire_binding(),
+                        resource: buffers.voxel_index_chunks.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
+                        resource: buffers.voxel_index_leaf_positions.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -598,15 +660,23 @@ impl Renderer {
                         binding: 4,
                         resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: buffers.voxel_map.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.voxel_lighting.as_entire_binding(),
+                    },
                 ],
             }),
-            specular_gbuffer: None,
-            lighting_resolve_gbuffer: None,
-            lighting_resolve_swap: None,
-            atrous_per_pass_primary: None,
-            atrous_per_pass_secondary: None,
-            atrous_per_pass: None,
-            atrous_swap: None,
+            // specular_gbuffer: None,
+            // lighting_resolve_gbuffer: None,
+            // lighting_resolve_swap: None,
+            // atrous_per_pass_primary: None,
+            // atrous_per_pass_secondary: None,
+            // atrous_per_pass: None,
+            // atrous_swap: None,
             deferred_gbuffer: None,
             deferred_swap: None,
             deferred_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -664,6 +734,14 @@ impl Renderer {
                                 ..Default::default()
                             },
                         )),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.voxel_map.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: buffers.voxel_lighting.as_entire_binding(),
                     },
                 ],
             }),
@@ -743,6 +821,26 @@ impl Renderer {
             },
         );
 
+        self.textures.gbuffer_voxel_id = Some(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gbuffer_voxel_id"),
+            size,
+            sample_count: 1,
+            format: wgpu::TextureFormat::R32Uint,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        }));
+        let view_gbuffer_voxel_id = self
+            .textures
+            .gbuffer_voxel_id
+            .as_ref()
+            .unwrap()
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("gbuffer_voxel_id"),
+                ..Default::default()
+            });
+
         self.textures.gbuffer_normal = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
             label: Some("gbuffer_normal"),
             size,
@@ -797,144 +895,144 @@ impl Renderer {
                 ..Default::default()
             });
 
-        self.textures.gbuffer_shadow = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_shadow"),
-            size: size_shadow,
-            sample_count: 1,
-            format: wgpu::TextureFormat::R32Uint,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_shadow = self.textures.gbuffer_shadow.as_ref().unwrap().create_view(
-            &wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_shadow"),
-                ..Default::default()
-            },
-        );
+        // self.textures.gbuffer_shadow = Some(device.create_texture(&wgpu::TextureDescriptor {
+        //     label: Some("gbuffer_shadow"),
+        //     size: size_shadow,
+        //     sample_count: 1,
+        //     format: wgpu::TextureFormat::R32Uint,
+        //     dimension: wgpu::TextureDimension::D2,
+        //     usage: wgpu::TextureUsages::STORAGE_BINDING,
+        //     mip_level_count: 1,
+        //     view_formats: &[],
+        // }));
+        // let view_gbuffer_shadow = self.textures.gbuffer_shadow.as_ref().unwrap().create_view(
+        //     &wgpu::TextureViewDescriptor {
+        //         label: Some("gbuffer_shadow"),
+        //         ..Default::default()
+        //     },
+        // );
 
-        self.textures.gbuffer_illumination =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_illumination"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_illumination = self
-            .textures
-            .gbuffer_illumination
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_illumination"),
-                ..Default::default()
-            });
+        // self.textures.gbuffer_illumination =
+        //     Some(device.create_texture(&wgpu::TextureDescriptor {
+        //         label: Some("gbuffer_illumination"),
+        //         size,
+        //         sample_count: 1,
+        //         format: wgpu::TextureFormat::Rgba16Float,
+        //         dimension: wgpu::TextureDimension::D2,
+        //         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        //         mip_level_count: 1,
+        //         view_formats: &[],
+        //     }));
+        // let view_gbuffer_illumination = self
+        //     .textures
+        //     .gbuffer_illumination
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&wgpu::TextureViewDescriptor {
+        //         label: Some("gbuffer_illumination"),
+        //         ..Default::default()
+        //     });
 
-        self.textures.gbuffer_acc_illumination =
-            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_illumination"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_acc_illumination = self
-            .textures
-            .gbuffer_acc_illumination
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_illumination"),
-                ..Default::default()
-            });
+        // self.textures.gbuffer_acc_illumination =
+        //     Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+        //         label: Some("gbuffer_acc_illumination"),
+        //         size,
+        //         sample_count: 1,
+        //         format: wgpu::TextureFormat::Rgba16Float,
+        //         dimension: wgpu::TextureDimension::D2,
+        //         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        //         mip_level_count: 1,
+        //         view_formats: &[],
+        //     }));
+        // let view_gbuffer_acc_illumination = self
+        //     .textures
+        //     .gbuffer_acc_illumination
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&wgpu::TextureViewDescriptor {
+        //         label: Some("gbuffer_acc_illumination"),
+        //         ..Default::default()
+        //     });
 
-        self.textures.gbuffer_acc_illumination_moments =
-            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_illumination_moments"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_acc_illumination_moments = self
-            .textures
-            .gbuffer_acc_illumination_moments
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_illumination_moments"),
-                ..Default::default()
-            });
+        // self.textures.gbuffer_acc_illumination_moments =
+        //     Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+        //         label: Some("gbuffer_acc_illumination_moments"),
+        //         size,
+        //         sample_count: 1,
+        //         format: wgpu::TextureFormat::Rgba16Float,
+        //         dimension: wgpu::TextureDimension::D2,
+        //         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        //         mip_level_count: 1,
+        //         view_formats: &[],
+        //     }));
+        // let view_gbuffer_acc_illumination_moments = self
+        //     .textures
+        //     .gbuffer_acc_illumination_moments
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&wgpu::TextureViewDescriptor {
+        //         label: Some("gbuffer_acc_illumination_moments"),
+        //         ..Default::default()
+        //     });
 
-        self.textures.gbuffer_acc_illumination_history_len =
-            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_illumination_history_len"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::R32Uint,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_acc_illumination_history_len = self
-            .textures
-            .gbuffer_acc_illumination_history_len
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_illumination_history_len"),
-                ..Default::default()
-            });
+        // self.textures.gbuffer_acc_illumination_history_len =
+        //     Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+        //         label: Some("gbuffer_acc_illumination_history_len"),
+        //         size,
+        //         sample_count: 1,
+        //         format: wgpu::TextureFormat::R32Uint,
+        //         dimension: wgpu::TextureDimension::D2,
+        //         usage: wgpu::TextureUsages::STORAGE_BINDING,
+        //         mip_level_count: 1,
+        //         view_formats: &[],
+        //     }));
+        // let view_acc_illumination_history_len = self
+        //     .textures
+        //     .gbuffer_acc_illumination_history_len
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&wgpu::TextureViewDescriptor {
+        //         label: Some("gbuffer_acc_illumination_history_len"),
+        //         ..Default::default()
+        //     });
 
-        self.textures.gbuffer_filter_result =
-            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_filter_result"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_filter_result = self
-            .textures
-            .gbuffer_filter_result
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
+        // self.textures.gbuffer_filter_result =
+        //     Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+        //         label: Some("gbuffer_filter_result"),
+        //         size,
+        //         sample_count: 1,
+        //         format: wgpu::TextureFormat::Rgba16Float,
+        //         dimension: wgpu::TextureDimension::D2,
+        //         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        //         mip_level_count: 1,
+        //         view_formats: &[],
+        //     }));
+        // let view_gbuffer_filter_result = self
+        //     .textures
+        //     .gbuffer_filter_result
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&Default::default());
 
-        self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_specular"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_specular = self
-            .textures
-            .gbuffer_specular
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_specular"),
-                ..Default::default()
-            });
+        // self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
+        //     label: Some("gbuffer_specular"),
+        //     size,
+        //     sample_count: 1,
+        //     format: wgpu::TextureFormat::Rgba16Float,
+        //     dimension: wgpu::TextureDimension::D2,
+        //     usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        //     mip_level_count: 1,
+        //     view_formats: &[],
+        // }));
+        // let view_gbuffer_specular = self
+        //     .textures
+        //     .gbuffer_specular
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&wgpu::TextureViewDescriptor {
+        //         label: Some("gbuffer_specular"),
+        //         ..Default::default()
+        //     });
 
         self.textures.deferred_output = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("deferred_output"),
@@ -986,6 +1084,10 @@ impl Renderer {
                         binding: 1,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_voxel_id),
+                    },
                 ],
             }));
 
@@ -1006,15 +1108,15 @@ impl Renderer {
             },
         ));
 
-        self.bind_groups.ambient_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ambient_gbuffer"),
-                layout: &self.bg_layouts.ambient_gbuffer,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_illumination),
-                }],
-            }));
+        // self.bind_groups.ambient_gbuffer =
+        //     Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //         label: Some("ambient_gbuffer"),
+        //         layout: &self.bg_layouts.ambient_gbuffer,
+        //         entries: &[wgpu::BindGroupEntry {
+        //             binding: 0,
+        //             resource: wgpu::BindingResource::TextureView(&view_gbuffer_voxel_id),
+        //         }],
+        //     }));
 
         self.bind_groups.shadow_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1022,14 +1124,14 @@ impl Renderer {
                 layout: &self.bg_layouts.shadow_gbuffer,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
+                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_voxel_id),
                 }],
             }));
 
-        self.bind_groups.ambient_swap = Some(device.create_bind_group_swap(
+        self.bind_groups.shadow_swap = Some(device.create_bind_group_swap(
             &SwapchainBindGroupDescriptor {
-                label: Some("ambient_swap"),
-                layout: &self.bg_layouts.ambient_swap,
+                label: Some("shadow_swap"),
+                layout: &self.bg_layouts.shadow_swap,
                 entries: &[
                     SwapchainBindGroupEntry {
                         binding: 0,
@@ -1043,212 +1145,212 @@ impl Renderer {
             },
         ));
 
-        self.bind_groups.specular_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("specular_gbuffer"),
-                layout: &self.bg_layouts.specular_gbuffer,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
-                }],
-            }));
+        // self.bind_groups.specular_gbuffer =
+        //     Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //         label: Some("specular_gbuffer"),
+        //         layout: &self.bg_layouts.specular_gbuffer,
+        //         entries: &[wgpu::BindGroupEntry {
+        //             binding: 0,
+        //             resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+        //         }],
+        //     }));
 
-        self.bind_groups.lighting_resolve_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting_resolve_gbuffer"),
-                layout: &self.bg_layouts.lighting_resolve_gbuffer,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
-                    },
-                ],
-            }));
+        // self.bind_groups.lighting_resolve_gbuffer =
+        //     Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //         label: Some("lighting_resolve_gbuffer"),
+        //         layout: &self.bg_layouts.lighting_resolve_gbuffer,
+        //         entries: &[
+        //             wgpu::BindGroupEntry {
+        //                 binding: 0,
+        //                 resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
+        //             },
+        //             wgpu::BindGroupEntry {
+        //                 binding: 1,
+        //                 resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
+        //             },
+        //             wgpu::BindGroupEntry {
+        //                 binding: 2,
+        //                 resource: wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
+        //             },
+        //         ],
+        //     }));
 
-        self.bind_groups.lighting_resolve_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("lighting_resolve_swap"),
-                layout: &self.bg_layouts.lighting_resolve_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        // resource: SwapchainBindingResource::Single(
-                        //     wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
-                        // ),
-                        resource: view_gbuffer_acc_illumination.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_acc_illumination.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: view_gbuffer_acc_illumination_moments.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 3,
-                        resource: view_gbuffer_acc_illumination_moments.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 4,
-                        resource: view_acc_illumination_history_len.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 5,
-                        resource: view_acc_illumination_history_len.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 6,
-                        resource: view_gbuffer_normal.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 7,
-                        resource: view_gbuffer_normal.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 8,
-                        resource: view_gbuffer_depth.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 9,
-                        resource: view_gbuffer_depth.both_reversed(),
-                    },
-                ],
-            },
-        ));
+        // self.bind_groups.lighting_resolve_swap = Some(device.create_bind_group_swap(
+        //     &SwapchainBindGroupDescriptor {
+        //         label: Some("lighting_resolve_swap"),
+        //         layout: &self.bg_layouts.lighting_resolve_swap,
+        //         entries: &[
+        //             SwapchainBindGroupEntry {
+        //                 binding: 0,
+        //                 // resource: SwapchainBindingResource::Single(
+        //                 //     wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
+        //                 // ),
+        //                 resource: view_gbuffer_acc_illumination.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 1,
+        //                 resource: view_gbuffer_acc_illumination.both_reversed(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 2,
+        //                 resource: view_gbuffer_acc_illumination_moments.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 3,
+        //                 resource: view_gbuffer_acc_illumination_moments.both_reversed(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 4,
+        //                 resource: view_acc_illumination_history_len.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 5,
+        //                 resource: view_acc_illumination_history_len.both_reversed(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 6,
+        //                 resource: view_gbuffer_normal.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 7,
+        //                 resource: view_gbuffer_normal.both_reversed(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 8,
+        //                 resource: view_gbuffer_depth.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 9,
+        //                 resource: view_gbuffer_depth.both_reversed(),
+        //             },
+        //         ],
+        //     },
+        // ));
 
-        self.bind_groups.atrous_per_pass_primary = Some(
-            device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
-                label: Some("atrous_per_pass_primary"),
-                layout: &self.bg_layouts.atrous_per_pass,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: SwapchainBindingResource::Single(
-                            device
-                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("atrous_sample_count"),
-                                    contents: bytemuck::cast_slice(&[1u32]),
-                                    usage: wgpu::BufferUsages::COPY_DST
-                                        | wgpu::BufferUsages::UNIFORM,
-                                })
-                                .as_entire_binding(),
-                        ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_acc_illumination.both(),
-                        // resource: SwapchainBindingResource::Single(
-                        //     wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination.a),
-                        // ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        // resource: view_gbuffer_acc_illumination.both(),
-                        resource: SwapchainBindingResource::Single(
-                            wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
-                        ),
-                    },
-                ],
-            }),
-        );
+        // self.bind_groups.atrous_per_pass_primary = Some(
+        //     device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
+        //         label: Some("atrous_per_pass_primary"),
+        //         layout: &self.bg_layouts.atrous_per_pass,
+        //         entries: &[
+        //             SwapchainBindGroupEntry {
+        //                 binding: 0,
+        //                 resource: SwapchainBindingResource::Single(
+        //                     device
+        //                         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //                             label: Some("atrous_sample_count"),
+        //                             contents: bytemuck::cast_slice(&[1u32]),
+        //                             usage: wgpu::BufferUsages::COPY_DST
+        //                                 | wgpu::BufferUsages::UNIFORM,
+        //                         })
+        //                         .as_entire_binding(),
+        //                 ),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 1,
+        //                 resource: view_gbuffer_acc_illumination.both(),
+        //                 // resource: SwapchainBindingResource::Single(
+        //                 //     wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination.a),
+        //                 // ),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 2,
+        //                 // resource: view_gbuffer_acc_illumination.both(),
+        //                 resource: SwapchainBindingResource::Single(
+        //                     wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
+        //                 ),
+        //             },
+        //         ],
+        //     }),
+        // );
 
-        self.bind_groups.atrous_per_pass_secondary = Some(
-            device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
-                label: Some("atrous_per_pass_secondary"),
-                layout: &self.bg_layouts.atrous_per_pass,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: SwapchainBindingResource::Single(
-                            device
-                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("atrous_sample_count"),
-                                    contents: bytemuck::cast_slice(&[2u32]),
-                                    usage: wgpu::BufferUsages::COPY_DST
-                                        | wgpu::BufferUsages::UNIFORM,
-                                })
-                                .as_entire_binding(),
-                        ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: SwapchainBindingResource::Single(
-                            wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
-                        ),
-                        // resource: SwapchainBindingResource::Single(
-                        //     wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination.a),
-                        // ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: view_gbuffer_acc_illumination.both(),
-                    },
-                ],
-            }),
-        );
+        // self.bind_groups.atrous_per_pass_secondary = Some(
+        //     device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
+        //         label: Some("atrous_per_pass_secondary"),
+        //         layout: &self.bg_layouts.atrous_per_pass,
+        //         entries: &[
+        //             SwapchainBindGroupEntry {
+        //                 binding: 0,
+        //                 resource: SwapchainBindingResource::Single(
+        //                     device
+        //                         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //                             label: Some("atrous_sample_count"),
+        //                             contents: bytemuck::cast_slice(&[2u32]),
+        //                             usage: wgpu::BufferUsages::COPY_DST
+        //                                 | wgpu::BufferUsages::UNIFORM,
+        //                         })
+        //                         .as_entire_binding(),
+        //                 ),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 1,
+        //                 resource: SwapchainBindingResource::Single(
+        //                     wgpu::BindingResource::TextureView(&view_gbuffer_filter_result.a),
+        //                 ),
+        //                 // resource: SwapchainBindingResource::Single(
+        //                 //     wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination.a),
+        //                 // ),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 2,
+        //                 resource: view_gbuffer_acc_illumination.both(),
+        //             },
+        //         ],
+        //     }),
+        // );
 
-        self.bind_groups.atrous_per_pass = Some(std::array::from_fn(|i| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("atrous_per_pass"),
-                layout: &self.bg_layouts.atrous_per_pass,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("atrous_sample_count"),
-                                contents: bytemuck::cast_slice(&[1u32 << ((i + 2) as u32)]),
-                                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-                            })
-                            .as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(match i & 1 {
-                            0 => &view_gbuffer_filter_result.b,
-                            _ => &view_gbuffer_filter_result.a,
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(match i & 1 {
-                            0 => &view_gbuffer_filter_result.a,
-                            _ => &view_gbuffer_filter_result.b,
-                        }),
-                    },
-                ],
-            })
-        }));
+        // self.bind_groups.atrous_per_pass = Some(std::array::from_fn(|i| {
+        //     device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //         label: Some("atrous_per_pass"),
+        //         layout: &self.bg_layouts.atrous_per_pass,
+        //         entries: &[
+        //             wgpu::BindGroupEntry {
+        //                 binding: 0,
+        //                 resource: device
+        //                     .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //                         label: Some("atrous_sample_count"),
+        //                         contents: bytemuck::cast_slice(&[1u32 << ((i + 2) as u32)]),
+        //                         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+        //                     })
+        //                     .as_entire_binding(),
+        //             },
+        //             wgpu::BindGroupEntry {
+        //                 binding: 1,
+        //                 resource: wgpu::BindingResource::TextureView(match i & 1 {
+        //                     0 => &view_gbuffer_filter_result.b,
+        //                     _ => &view_gbuffer_filter_result.a,
+        //                 }),
+        //             },
+        //             wgpu::BindGroupEntry {
+        //                 binding: 2,
+        //                 resource: wgpu::BindingResource::TextureView(match i & 1 {
+        //                     0 => &view_gbuffer_filter_result.a,
+        //                     _ => &view_gbuffer_filter_result.b,
+        //                 }),
+        //             },
+        //         ],
+        //     })
+        // }));
 
-        self.bind_groups.atrous_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("atrous_swap"),
-                layout: &self.bg_layouts.atrous_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_acc_illumination_history_len.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_normal.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: view_gbuffer_depth.both(),
-                    },
-                ],
-            },
-        ));
+        // self.bind_groups.atrous_swap = Some(device.create_bind_group_swap(
+        //     &SwapchainBindGroupDescriptor {
+        //         label: Some("atrous_swap"),
+        //         layout: &self.bg_layouts.atrous_swap,
+        //         entries: &[
+        //             SwapchainBindGroupEntry {
+        //                 binding: 0,
+        //                 resource: view_acc_illumination_history_len.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 1,
+        //                 resource: view_gbuffer_normal.both(),
+        //             },
+        //             SwapchainBindGroupEntry {
+        //                 binding: 2,
+        //                 resource: view_gbuffer_depth.both(),
+        //             },
+        //         ],
+        //     },
+        // ));
 
         self.bind_groups.deferred_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1267,6 +1369,10 @@ impl Renderer {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_voxel_id),
+                    },
                 ],
             }));
 
@@ -1283,25 +1389,25 @@ impl Renderer {
                         binding: 1,
                         resource: view_gbuffer_depth.both(),
                     },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        // resource: SwapchainBindingResource::Single(
-                        //     wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
-                        // ),
-                        resource: view_gbuffer_acc_illumination.both(),
-                        // resource: SwapchainBindingResource::Single(
-                        //     wgpu::BindingResource::TextureView(match ATROUS_PASS_COUNT & 1 {
-                        //         0 => &view_gbuffer_filter_result.a,
-                        //         _ => &view_gbuffer_filter_result.b,
-                        //     }),
-                        // ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 3,
-                        resource: SwapchainBindingResource::Single(
-                            wgpu::BindingResource::TextureView(&view_gbuffer_specular),
-                        ),
-                    },
+                    // SwapchainBindGroupEntry {
+                    //     binding: 2,
+                    //     // resource: SwapchainBindingResource::Single(
+                    //     //     wgpu::BindingResource::TextureView(&view_gbuffer_shadow),
+                    //     // ),
+                    //     resource: view_gbuffer_acc_illumination.both(),
+                    //     // resource: SwapchainBindingResource::Single(
+                    //     //     wgpu::BindingResource::TextureView(match ATROUS_PASS_COUNT & 1 {
+                    //     //         0 => &view_gbuffer_filter_result.a,
+                    //     //         _ => &view_gbuffer_filter_result.b,
+                    //     //     }),
+                    //     // ),
+                    // },
+                    // SwapchainBindGroupEntry {
+                    //     binding: 3,
+                    //     resource: SwapchainBindingResource::Single(
+                    //         wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                    //     ),
+                    // },
                 ],
             },
         ));
@@ -1379,6 +1485,32 @@ impl Renderer {
             };
             eprintln!("{:?}", stats);
         }
+
+        let buffer_results = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: self.buffers.voxel_map_info.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.voxel_map_info,
+            0,
+            &buffer_results,
+            0,
+            buffer_results.size(),
+        );
+        ctx.queue.submit([encoder.finish()]);
+        let buffer_results = buffer_results.slice(..);
+        buffer_results.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let data = buffer_results.get_mapped_range();
+        let data: &[VoxelMapInfoBuffer] = bytemuck::cast_slice(&data);
+        let data = data[0];
+
+        dbg!(&data);
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {
@@ -1451,6 +1583,11 @@ impl Renderer {
 
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
 
+        encoder.clear_buffer(&self.buffers.voxel_map_info, 0, None);
+        encoder.clear_buffer(&self.buffers.voxel_visibility_mask, 0, None);
+        encoder.clear_buffer(&self.buffers.voxel_map, 0, None);
+        encoder.clear_buffer(&self.buffers.voxel_lighting, 0, None);
+
         // raymarch pass
         {
             let mut pass = encoder.begin_compute_pass_timed("Raymarch", &mut self.timing);
@@ -1471,8 +1608,8 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
-            pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.shadow_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.shadow_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("shadow");
@@ -1508,22 +1645,22 @@ impl Renderer {
         // }
 
         // lighting resolve pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Lighting Resolve", &mut self.timing);
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Lighting Resolve", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.lighting_resolve);
-            pass.set_bind_group(0, &self.bind_groups.lighting_resolve_gbuffer, &[]);
-            pass.set_bind_group_swap(
-                1,
-                &self.bind_groups.lighting_resolve_swap,
-                &[],
-                self.frame_id,
-            );
-            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+        //     pass.set_pipeline(&self.pipelines.lighting_resolve);
+        //     pass.set_bind_group(0, &self.bind_groups.lighting_resolve_gbuffer, &[]);
+        //     pass.set_bind_group_swap(
+        //         1,
+        //         &self.bind_groups.lighting_resolve_swap,
+        //         &[],
+        //         self.frame_id,
+        //     );
+        //     pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("lighting_resolve");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
-        }
+        //     pass.insert_debug_marker("lighting_resolve");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        // }
 
         // denoise pass
         // for i in 0..ATROUS_PASS_COUNT {

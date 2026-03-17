@@ -117,7 +117,6 @@ fn compute_main(in: ComputeIn) {
 // some threads stall the pipeline with the big triangles
 // just a generation step though
 
-
 // just does a separating axis test on each voxel in the triangle's AABB
 // very slow, but also very accurate
 fn voxelize_aabb() {
@@ -355,14 +354,14 @@ fn pack_voxel(normal: vec3<f32>, metallic: f32, roughness: f32, palette_index: u
 /// decodes world space normal from lower 17 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
 fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
-	let x = f32((packed >> 9u) & 0xffu) / 255.0;
-	let y = f32((packed >> 1u) & 0xffu) / 255.0;
-	let sgn = f32(packed & 1u) * 2.0 - 1.0;
-	var res = vec3<f32>(0.);
-	res.x = x - y;
-	res.y = x + y - 1.0;
-	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
-	return normalize(res);
+    let x = f32((packed >> 9u) & 0xffu) / 255.0;
+    let y = f32((packed >> 1u) & 0xffu) / 255.0;
+    let sgn = f32(packed & 1u) * 2.0 - 1.0;
+    var res = vec3<f32>(0.);
+    res.x = x - y;
+    res.y = x + y - 1.0;
+    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+    return normalize(res);
 }
 
 /// encodes world space normal in lower 17 bits of u32

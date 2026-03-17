@@ -17,6 +17,13 @@ pub struct EnvironmentDataBuffer {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VoxelMapInfoBuffer {
+    pub visible_count: u32,
+    pub failed_to_insert_count: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraDataBuffer {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],

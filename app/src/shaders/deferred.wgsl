@@ -4,11 +4,12 @@ override dielectric_specular: f32 = 0.04;
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(3) var tex_voxel_id: texture_storage_2d<r32uint, read>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
-@group(1) @binding(2) var tex_illumination: texture_2d<f32>;
-@group(1) @binding(3) var tex_specular: texture_2d<f32>;
+// @group(1) @binding(2) var tex_illumination: texture_2d<f32>;
+// @group(1) @binding(3) var tex_specular: texture_2d<f32>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -16,29 +17,31 @@ override dielectric_specular: f32 = 0.04;
 @group(2) @binding(3) var tex_irradiance: texture_cube<f32>;
 @group(2) @binding(4) var tex_prefilter: texture_cube<f32>;
 @group(2) @binding(5) var tex_brdf_lut: texture_2d<f32>;
+@group(2) @binding(6) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+@group(2) @binding(7) var<storage, read> voxel_lighting: array<u32>; // one per voxel entry right now
 
 struct Environment {
-	sun_direction: vec3<f32>,
-	shadow_bias: f32,
-	camera: Camera,
-	prev_camera: Camera,
-	shadow_spread: f32,
-	filter_shadows: u32,
-	shadow_filter_radius: f32,
-	max_ambient_distance: u32,
+    sun_direction: vec3<f32>,
+    shadow_bias: f32,
+    camera: Camera,
+    prev_camera: Camera,
+    shadow_spread: f32,
+    filter_shadows: u32,
+    shadow_filter_radius: f32,
+    max_ambient_distance: u32,
     smooth_normal_factor: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
 struct Camera {
-	view_proj: mat4x4<f32>,
-	inv_view_proj: mat4x4<f32>,
-	ws_position: vec3<f32>,
-	forward: vec3<f32>,
-	near: f32,
-	jitter: vec2<f32>,
-	far: f32,
-	fov: f32,
+    view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    ws_position: vec3<f32>,
+    forward: vec3<f32>,
+    near: f32,
+    jitter: vec2<f32>,
+    far: f32,
+    fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
@@ -66,7 +69,7 @@ fn compute_main(in: ComputeIn) {
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
+    let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
 
     let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
@@ -77,14 +80,23 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
+    let voxel_id = textureLoad(tex_voxel_id, pos).r;
+    let map_val = map_get(voxel_id);
+
+    var shadow = 0.0;
+    if map_val.exists {
+        shadow = f32(voxel_lighting[map_val.value]);
+    }
+
     let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
     let voxel = unpack_voxel(packed);
 
     let albedo_sample = textureLoad(tex_albedo, pos);
     let albedo = albedo_sample.rgb;
-    let illumination = textureLoad(tex_illumination, pos, 0);
-    let shadow = illumination.r;
+    // let illumination = textureLoad(tex_illumination, pos, 0);
+    // let shadow = illumination.r;
+    // let shadow = 0.0;
     // let ambient = illumination.g;
     let ambient = 1.0;
     // let specular = textureLoad(tex_specular, pos, 0).rgb;
@@ -195,7 +207,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let ndv = max(dot(N, V), 0.0);
         let ndl = max(dot(N, L), 0.0);
 
-        let diffuse  = k_d * in.albedo / PI;
+        let diffuse = k_d * in.albedo / PI;
 
         let specular = ndf * geom * k_s / max(4.0 * ndv * ndl, 0.000001);
 
@@ -261,71 +273,6 @@ fn fresnel_roughness(f0: vec3<f32>, N: vec3<f32>, V: vec3<f32>, roughness: f32) 
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - ndv, 5.0);
 }
 
-
-fn gather_illumination(pos: vec2<i32>, noise: vec3<f32>) -> vec3<f32> {
-    let dimensions = textureDimensions(tex_illumination).xy;
-    let texel_size = 1.0 / vec2<f32>(dimensions);
-    let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-
-    if environment.filter_shadows == 0u {
-        return textureLoad(tex_illumination, pos, 0).rgb;
-    } else {
-        return filter_spatial(uv, texel_size, noise).value;
-    }
-}
-
-const FILTER_KERNEL: array<vec2<f32>, 12> = array<vec2<f32>, 12>(
-    vec2<f32>(-0.326212, -0.405805),
-    vec2<f32>(-0.840144, -0.073580),
-    vec2<f32>(-0.695914,  0.457137),
-    vec2<f32>(-0.203345,  0.620716),
-    vec2<f32>( 0.962340, -0.194983),
-    vec2<f32>( 0.473434, -0.480026),
-    vec2<f32>( 0.519456,  0.767022),
-    vec2<f32>( 0.185461, -0.893124),
-    vec2<f32>( 0.507431,  0.064425),
-    vec2<f32>( 0.896420,  0.412458),
-    vec2<f32>(-0.321940, -0.932615),
-    vec2<f32>(-0.791559, -0.597705)
-);
-
-struct FilterResult {
-    value: vec3<f32>,
-    min: vec3<f32>,
-    max: vec3<f32>,
-}
-
-fn filter_spatial(uv: vec2<f32>, texel_size: vec2<f32>, noise: vec3<f32>) -> FilterResult {
-    var weight = 0.0;
-    var cur = vec3(0.0);
-    var min_val = vec3(1.0);
-    var max_val = vec3(0.0);
-
-    let radius = environment.shadow_filter_radius * texel_size;
-    let t = noise.r * 6.2831853;
-    let s_t = sin(t);
-    let c_t = cos(t);
-    let rotation = mat2x2<f32>(c_t, s_t, -s_t, c_t);
-
-    for (var i = 0u; i < 12u; i++) {
-        let offset = rotation * FILTER_KERNEL[i];
-        let sample_uv = uv + offset * radius;
-
-        let val = textureSampleLevel(tex_illumination, sampler_linear, sample_uv, 0).rgb;
-        min_val = min(min_val, val);
-        max_val = max(max_val, val);
-        cur += val;
-        weight += 1.0;
-    }
-    cur /= weight;
-
-    var res: FilterResult;
-    res.value = cur;
-    res.min = min_val;
-    res.max = max_val;
-    return res;
-}
-
 struct Ray {
     ls_origin: vec3<f32>,
     ws_direction: vec3<f32>,
@@ -381,12 +328,67 @@ fn decode_hit_mask(packed: u32) -> vec3<bool> {
 /// decodes world space normal from lower 21 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
 fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
-	let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
-	let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
-	let sgn = f32(packed & 1u) * 2.0 - 1.0;
-	var res = vec3<f32>(0.);
-	res.x = x - y;
-	res.y = x + y - 1.0;
-	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
-	return normalize(res);
+    let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
+    let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
+    let sgn = f32(packed & 1u) * 2.0 - 1.0;
+    var res = vec3<f32>(0.);
+    res.x = x - y;
+    res.y = x + y - 1.0;
+    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+    return normalize(res);
+}
+
+/// ------------------------------------------------------
+/// -------------------- map utils -----------------------
+
+struct MapResult {
+    exists: bool,
+    value: u32,
+}
+
+fn map_get(id: u32) -> MapResult {
+    let n = arrayLength(&voxel_map) >> 1u;
+
+    var key = hash_murmur3(id) % n;
+    for (var i = 0u; i < 4u; i++) {
+        if voxel_map[key << 1u] == id {
+            var res: MapResult;
+            res.exists = true;
+            res.value = voxel_map[(key << 1u) + 1u];
+            return res;
+        }
+        key += 1u;
+        if key >= n {
+            key = 0u;
+        }
+    }
+
+    var res: MapResult;
+    res.exists = false;
+    return res;
+}
+
+// from https://github.com/aappleby/smhasher
+fn hash_murmur3(seed: u32) -> u32 {
+    const C1: u32 = 0xcc9e2d51u;
+    const C2: u32 = 0x1b873593u;
+
+    var h = 0u;
+    var k = seed;
+
+    k *= C1;
+    k = (k << 15u) | (k >> 17u);
+    k *= C2;
+
+    h ^= k;
+    h = (h << 13u) | (h >> 19u);
+    h = h * 5u + 0xe6546b64u;
+    h ^= 4u;
+
+    h ^= h >> 16;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35u;
+    h ^= h >> 16;
+    return h;
 }

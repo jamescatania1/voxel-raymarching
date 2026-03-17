@@ -54,6 +54,7 @@ pub struct VoxelBufferData {
     pub buffer_palette: wgpu::Buffer,
     pub buffer_index_chunks: wgpu::Buffer,
     pub buffer_leaf_chunks: wgpu::Buffer,
+    pub buffer_index_leaf_positions: wgpu::Buffer,
 }
 
 impl VoxelModel {
@@ -73,6 +74,12 @@ impl VoxelModel {
         let buffer_leaf_chunks = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_leaf_chunks"),
             size: self.data.buffer_leaf_chunks.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_index_leaf_positions = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_index_leaf_positions"),
+            size: self.data.buffer_index_leaf_positions.size(),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -99,6 +106,13 @@ impl VoxelModel {
             0,
             buffer_leaf_chunks.size(),
         );
+        encoder.copy_buffer_to_buffer(
+            &self.data.buffer_index_leaf_positions,
+            0,
+            &buffer_index_leaf_positions,
+            0,
+            buffer_index_leaf_positions.size(),
+        );
         queue.submit([encoder.finish()]);
 
         let buffer_palette = buffer_palette.slice(..);
@@ -109,6 +123,9 @@ impl VoxelModel {
 
         let buffer_leaf_chunks = buffer_leaf_chunks.slice(..);
         buffer_leaf_chunks.map_async(wgpu::MapMode::Read, |_| {});
+
+        let buffer_index_leaf_positions = buffer_index_leaf_positions.slice(..);
+        buffer_index_leaf_positions.map_async(wgpu::MapMode::Read, |_| {});
 
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
@@ -135,12 +152,20 @@ impl VoxelModel {
         };
         body.extend_from_slice(&data_leaf_chunks);
 
+        let data_index_leaf_positions = buffer_index_leaf_positions.get_mapped_range();
+        let buffer_index_leaf_positions = BufferView {
+            start: body.len(),
+            end: body.len() + data_index_leaf_positions.len(),
+        };
+        body.extend_from_slice(&data_index_leaf_positions);
+
         let header = VoxelFileHeader {
             meta: self.meta.clone(),
             file: VoxelFileInfo {
                 buffer_palette,
                 buffer_index_chunks,
                 buffer_leaf_chunks,
+                buffer_index_leaf_positions,
             },
         };
         let header = serde_json::to_vec(&header)?;
@@ -163,6 +188,10 @@ impl VoxelModel {
         println!(
             "   -leaf chunks size: {:.2} MB",
             (data_leaf_chunks.len() as f64) / (1024.0 * 1024.0)
+        );
+        println!(
+            "   -index leaf positions size: {:.2} MB",
+            (data_index_leaf_positions.len() as f64) / (1024.0 * 1024.0)
         );
         println!("  -bounding size: {}", self.meta.bounding_size);
         println!("   -voxel count: {}", self.meta.voxel_count);
@@ -205,6 +234,13 @@ impl VoxelModel {
                 [header.file.buffer_leaf_chunks.start..header.file.buffer_leaf_chunks.end],
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
+        let buffer_index_leaf_positions =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{}_buffer_index_leaf_positions", header.meta.name)),
+                contents: &buf[header.file.buffer_index_leaf_positions.start
+                    ..header.file.buffer_index_leaf_positions.end],
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
 
         Ok(Self {
             meta: header.meta,
@@ -212,6 +248,7 @@ impl VoxelModel {
                 buffer_palette,
                 buffer_index_chunks,
                 buffer_leaf_chunks,
+                buffer_index_leaf_positions,
             },
         })
     }
@@ -234,6 +271,7 @@ pub struct VoxelFileInfo {
     buffer_palette: BufferView,
     buffer_index_chunks: BufferView,
     buffer_leaf_chunks: BufferView,
+    buffer_index_leaf_positions: BufferView,
 }
 #[derive(Serialize, Deserialize, Debug)]
 struct BufferView {
@@ -299,6 +337,7 @@ fn layouts(device: &wgpu::Device, scene_texture_count: u32) -> (Pipelines, BindG
             "tree_data",
             wgpu::ShaderStages::COMPUTE,
             (
+                storage_buffer().read_write(),
                 storage_buffer().read_write(),
                 storage_buffer().read_write(),
                 storage_texture().rgba32uint().dimension_3d().read_only(),
@@ -520,6 +559,11 @@ fn voxelize_gltf(
     );
     max_index_chunks = max_index_chunks_bytes / 12;
 
+    let max_index_leaf_positions_bytes = u64::min(
+        (MAX_STORAGE_BUFFER_BINDING_SIZE as u64 - 7).next_multiple_of(8),
+        max_index_chunks * 8,
+    );
+
     println!(
         "raw_index_chunks: {:.2} MiB",
         (raw_chunk_size.element_product() as f64) * 4.0 / (1024.0 * 1024.0)
@@ -546,6 +590,12 @@ fn voxelize_gltf(
     let buffer_leaf_chunks = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("leaf_chunks"),
         size: max_leaf_chunks_bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let buffer_index_leaf_positions = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("index_leaf_positions"),
+        size: max_index_leaf_positions_bytes,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -591,12 +641,16 @@ fn voxelize_gltf(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
+                resource: buffer_index_leaf_positions.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
                 resource: wgpu::BindingResource::TextureView(
                     &tex_index_map_a.create_view(&Default::default()),
                 ),
             },
             wgpu::BindGroupEntry {
-                binding: 3,
+                binding: 4,
                 resource: wgpu::BindingResource::TextureView(
                     &tex_index_map_b.create_view(&Default::default()),
                 ),
@@ -617,12 +671,16 @@ fn voxelize_gltf(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
+                resource: buffer_index_leaf_positions.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
                 resource: wgpu::BindingResource::TextureView(
                     &tex_index_map_b.create_view(&Default::default()),
                 ),
             },
             wgpu::BindGroupEntry {
-                binding: 3,
+                binding: 4,
                 resource: wgpu::BindingResource::TextureView(
                     &tex_index_map_a.create_view(&Default::default()),
                 ),
@@ -636,13 +694,14 @@ fn voxelize_gltf(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         contents: bytemuck::cast_slice(&[AllocatorResults {
             index_chunk_count: 0,
+            index_leaf_count: 0,
             voxel_count: 0,
         }]),
     });
     // i read from the alloc metadata buffer by copying it here
     let buffer_alloc_results = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("tree_alloc_results"),
-        size: 8,
+        size: buffer_alloc_data.size(),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -753,6 +812,7 @@ fn voxelize_gltf(
         max_voxels: max_leaf_chunks_bytes.div_ceil(4),
         buffer_index_chunks,
         buffer_leaf_chunks,
+        buffer_index_leaf_positions,
         buffer_alloc_results,
     };
     let allocated = pack_tree(device, queue, &mut tree).context("error packing voxel tree")?;
@@ -769,6 +829,7 @@ fn voxelize_gltf(
             buffer_palette: palette.buffer_palette,
             buffer_index_chunks: tree.buffer_index_chunks,
             buffer_leaf_chunks: tree.buffer_leaf_chunks,
+            buffer_index_leaf_positions: tree.buffer_index_leaf_positions,
         },
     })
 }
@@ -1089,6 +1150,7 @@ struct TreeData {
     max_voxels: u64,
     buffer_index_chunks: wgpu::Buffer,
     buffer_leaf_chunks: wgpu::Buffer,
+    buffer_index_leaf_positions: wgpu::Buffer,
     buffer_alloc_results: wgpu::Buffer,
 }
 struct PaletteData {
@@ -1100,6 +1162,7 @@ struct PaletteData {
 #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct AllocatorResults {
     index_chunk_count: u32,
+    index_leaf_count: u32,
     voxel_count: u32,
 }
 
@@ -1235,6 +1298,23 @@ fn pack_tree(
         Some(allocated_index_chunk_bytes),
     );
 
+    let allocated_index_leaf_positions_bytes = (alloc_results.index_leaf_count as u64 + 1) * 8;
+    let buffer_index_leaf_positions_cpct = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("tree_index_leaf_positions"),
+        size: allocated_index_leaf_positions_bytes,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    encoder.copy_buffer_to_buffer(
+        &tree.buffer_index_leaf_positions,
+        0,
+        &buffer_index_leaf_positions_cpct,
+        0,
+        Some(allocated_index_leaf_positions_bytes),
+    );
+
     let allocated_leaf_chunk_bytes = alloc_results.voxel_count * 4;
     let buffer_leaf_chunks_cpct = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("tree_leaf_chunks"),
@@ -1256,9 +1336,11 @@ fn pack_tree(
 
     tree.buffer_index_chunks.destroy();
     tree.buffer_leaf_chunks.destroy();
+    tree.buffer_index_leaf_positions.destroy();
 
     tree.buffer_leaf_chunks = buffer_leaf_chunks_cpct;
     tree.buffer_index_chunks = buffer_index_chunks_cpct;
+    tree.buffer_index_leaf_positions = buffer_index_leaf_positions_cpct;
 
     Ok(alloc_results)
 }
