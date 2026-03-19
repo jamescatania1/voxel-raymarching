@@ -1,7 +1,6 @@
-@group(0) @binding(0) var<storage, read> cur_voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
-@group(0) @binding(1) var<storage, read> prev_voxel_map: array<u32>;
-@group(0) @binding(2) var<storage, read_write> cur_voxel_lighting: array<u32>;
-@group(0) @binding(3) var<storage, read> prev_voxel_lighting: array<f32>;
+@group(0) @binding(0) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+@group(0) @binding(1) var<storage, read> cur_voxel_lighting: array<u32>;
+@group(0) @binding(2) var<storage, read_write> acc_voxel_lighting: array<u32>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -47,86 +46,47 @@ struct ComputeIn {
 
 var<workgroup> stack: array<array<u32, 11>, 64>;
 
-const ACC_ALPHA: f32 = 0.25;
+const MAX_HISTORY_LENGTH: u32 = 2048u;
 
-@compute @workgroup_size(32, 1, 1)
+@compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
-    let key = cur_voxel_map[in.id.x << 1u];
+    let key = voxel_map[in.id.x << 1u];
     if key == 0u {
         return;
     }
 
-    let cur_index = cur_voxel_map[(in.id.x << 1u) | 1u];
-    if cur_index == 0u {
+    let index = voxel_map[(in.id.x << 1u) | 1u];
+    if index == 0u {
         return;
     }
 
-    let cur_shadow = cur_voxel_lighting[cur_index];
-    let cur_visible_count = cur_shadow & 0xFFFFu;
-    let cur_shadow_count = cur_shadow >> 16u;
+    let cur_shadow = cur_voxel_lighting[index];
+    var cur_visible_count = cur_shadow & 0xFFFFu;
+    var cur_shadow_count = min(cur_visible_count, cur_shadow >> 16u);
 
-    var shadow = f32(cur_shadow_count) / max(1.0, f32(cur_visible_count));
-
-    let prev = map_get(key);
-    if prev.exists {
-        let acc_shadow = prev_voxel_lighting[prev.value];
-        shadow = shadow * ACC_ALPHA + acc_shadow * (1.0 - ACC_ALPHA);
+    if cur_visible_count >= MAX_HISTORY_LENGTH {
+        let diff = cur_visible_count - MAX_HISTORY_LENGTH;
+        let shadow = f32(cur_shadow_count) / f32(cur_visible_count);
+        cur_shadow_count -= u32(round(shadow * f32(diff)));
+        cur_visible_count -= diff;
     }
 
-    cur_voxel_lighting[cur_index] = bitcast<u32>(shadow);
-}
+    let acc = acc_voxel_lighting[key];
+    var acc_length = acc & 0xFFFFu;
+    var acc_shadow_count = min(acc_length, acc >> 16u);
 
-/// ------------------------------------------------------
-/// -------------------- map utils -----------------------
-
-struct MapResult {
-    exists: bool,
-    value: u32,
-}
-
-fn map_get(id: u32) -> MapResult {
-    let n = arrayLength(&prev_voxel_map) >> 1u;
-
-    var key = hash_murmur3(id) % n;
-    for (var i = 0u; i < 4u; i++) {
-        if prev_voxel_map[key << 1u] == id {
-            var res: MapResult;
-            res.exists = true;
-            res.value = prev_voxel_map[(key << 1u) + 1u];
-            return res;
-        }
-        key += 1u;
-        if key >= n {
-            key = 0u;
-        }
+    if acc_length >= MAX_HISTORY_LENGTH {
+        let diff = acc_length - MAX_HISTORY_LENGTH + cur_visible_count;
+        let shadow = f32(acc_shadow_count) / f32(acc_length);
+        acc_shadow_count -= u32(round(shadow * f32(diff)));
+        acc_length -= diff;
     }
+    acc_length += cur_visible_count;
+    acc_shadow_count += cur_shadow_count;
 
-    var res: MapResult;
-    res.exists = false;
-    return res;
-}
+    acc_voxel_lighting[key] = (acc_shadow_count << 16u) | acc_length;
 
-// from https://github.com/aappleby/smhasher
-fn hash_murmur3(seed: u32) -> u32 {
-    const C1: u32 = 0xcc9e2d51u;
-    const C2: u32 = 0x1b873593u;
+    // acc_voxel_lighting[key] = acc_voxel_lighting[key] *(1.0 - ACC_ALPHA) + shadow *ACC_ALPHA;
 
-    var h = 0u;
-    var k = seed;
-
-    k *= C1;
-    k = (k << 15u) | (k >> 17u);
-    k *= C2;
-
-    h ^= k;
-    h = (h << 13u) | (h >> 19u);
-    h = h * 5u + 0xe6546b64u;
-    h ^= 4u;
-
-    h ^= h >> 16;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16;
-    return h;
+    // cur_voxel_lighting[cur_index] = bitcast<u32>(shadow);
 }

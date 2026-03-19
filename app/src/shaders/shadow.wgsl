@@ -1,12 +1,7 @@
-@group(0) @binding(0) var tex_voxel_id: texture_storage_2d<r32uint, read>;
+@group(0) @binding(0) var tex_voxel_id: texture_storage_2d<rg32uint, read>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
-@group(1) @binding(2) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
-
-// current frame per-voxel shadow values
-// occluded_count (16 bits) | visible_count (16 bits)
-@group(1) @binding(3) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
 
 struct VoxelSceneMetadata {
     bounding_size: u32,
@@ -22,6 +17,11 @@ struct IndexChunk {
 @group(2) @binding(2) var<storage, read> index_leaf_positions: array<vec2<u32>>;
 @group(2) @binding(3) var tex_noise: texture_3d<f32>;
 @group(2) @binding(4) var sampler_noise: sampler;
+@group(2) @binding(5) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+
+// current frame per-voxel shadow values
+// occluded_count (16 bits) | visible_count (16 bits)
+@group(2) @binding(6) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -83,8 +83,8 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
-    let voxel_id = textureLoad(tex_voxel_id, pos).r;
-    let map_val = map_get(voxel_id);
+    let voxel_id = textureLoad(tex_voxel_id, pos).rg;
+    let map_val = map_get(voxel_id.r);
     if !map_val.exists {
         return;
     }
@@ -92,7 +92,7 @@ fn compute_main(in: ComputeIn) {
     let packed = textureLoad(tex_normal, pos).r;
     let voxel = unpack_voxel(packed);
 
-    var voxel_pos = vec3<f32>(get_voxel_position(voxel_id)) + 0.5;
+    var voxel_pos = vec3<f32>(get_voxel_position(voxel_id.g)) + 0.5;
     // voxel_pos += (0.5 + environment.shadow_bias * 20.0) * voxel.ls_hit_normal;
 
     // let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));

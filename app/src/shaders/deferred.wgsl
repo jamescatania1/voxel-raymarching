@@ -4,12 +4,10 @@ override dielectric_specular: f32 = 0.04;
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(3) var tex_voxel_id: texture_storage_2d<r32uint, read>;
+@group(0) @binding(3) var tex_voxel_id: texture_storage_2d<rg32uint, read>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
-@group(1) @binding(2) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
-@group(1) @binding(3) var<storage, read> voxel_lighting: array<f32>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -17,6 +15,7 @@ override dielectric_specular: f32 = 0.04;
 @group(2) @binding(3) var tex_irradiance: texture_cube<f32>;
 @group(2) @binding(4) var tex_prefilter: texture_cube<f32>;
 @group(2) @binding(5) var tex_brdf_lut: texture_2d<f32>;
+@group(2) @binding(6) var<storage, read> voxel_lighting: array<u32>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -79,12 +78,17 @@ fn compute_main(in: ComputeIn) {
     }
 
     let voxel_id = textureLoad(tex_voxel_id, pos).r;
-    let map_val = map_get(voxel_id);
+    // let map_val = map_get(voxel_id);
 
-    var shadow = 0.0;
-    if map_val.exists {
-        shadow = 1.0 - voxel_lighting[map_val.value];
-    }
+    let shadow_packed = voxel_lighting[voxel_id];
+    let shadow_length = max(shadow_packed & 0xFFFFu, 1u);
+    let shadow_count = min(shadow_length, shadow_packed >> 16u);
+    let shadow = 1.0 - f32(shadow_count) / f32(shadow_length);
+
+    // var shadow = 0.0;
+    // if map_val.exists {
+    //     shadow = 1.0 - voxel_lighting[map_val.value];
+    // }
 
     let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
@@ -338,59 +342,4 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
     res.y = x + y - 1.0;
     res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
     return normalize(res);
-}
-
-/// ------------------------------------------------------
-/// -------------------- map utils -----------------------
-
-struct MapResult {
-    exists: bool,
-    value: u32,
-}
-
-fn map_get(id: u32) -> MapResult {
-    let n = arrayLength(&voxel_map) >> 1u;
-
-    var key = hash_murmur3(id) % n;
-    for (var i = 0u; i < 4u; i++) {
-        if voxel_map[key << 1u] == id {
-            var res: MapResult;
-            res.exists = true;
-            res.value = voxel_map[(key << 1u) + 1u];
-            return res;
-        }
-        key += 1u;
-        if key >= n {
-            key = 0u;
-        }
-    }
-
-    var res: MapResult;
-    res.exists = false;
-    return res;
-}
-
-// from https://github.com/aappleby/smhasher
-fn hash_murmur3(seed: u32) -> u32 {
-    const C1: u32 = 0xcc9e2d51u;
-    const C2: u32 = 0x1b873593u;
-
-    var h = 0u;
-    var k = seed;
-
-    k *= C1;
-    k = (k << 15u) | (k >> 17u);
-    k *= C2;
-
-    h ^= k;
-    h = (h << 13u) | (h >> 19u);
-    h = h * 5u + 0xe6546b64u;
-    h ^= 4u;
-
-    h ^= h >> 16;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16;
-    return h;
 }

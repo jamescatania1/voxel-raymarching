@@ -28,8 +28,6 @@ use crate::{
     },
 };
 
-const ATROUS_PASS_COUNT: usize = 3;
-
 define_shaders! {
     raymarch "../shaders/raymarch.wgsl",
     shadow "../shaders/shadow.wgsl",
@@ -93,7 +91,7 @@ struct BindGroupLayouts {
     // ambient_gbuffer: wgpu::BindGroupLayout,
     shadow_swap: wgpu::BindGroupLayout,
     shadow_static: wgpu::BindGroupLayout,
-    resolve_swap: wgpu::BindGroupLayout,
+    resolve: wgpu::BindGroupLayout,
     // specular_gbuffer: wgpu::BindGroupLayout,
     // lighting_resolve_gbuffer: wgpu::BindGroupLayout,
     // lighting_resolve_swap: wgpu::BindGroupLayout,
@@ -116,7 +114,7 @@ struct BindGroups {
     // ambient_gbuffer: Option<wgpu::BindGroup>,
     shadow_swap: Option<SwapchainBindGroup>,
     shadow_static: wgpu::BindGroup,
-    resolve_swap: SwapchainBindGroup,
+    resolve: wgpu::BindGroup,
     // specular_gbuffer: Option<wgpu::BindGroup>,
     // lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
     // lighting_resolve_swap: Option<SwapchainBindGroup>,
@@ -163,8 +161,9 @@ struct Buffers {
     voxel_index_leaf_positions: wgpu::Buffer,
     voxel_map_info: wgpu::Buffer,
     voxel_visibility_mask: wgpu::Buffer,
-    voxel_map: [wgpu::Buffer; 2],
-    voxel_lighting: [wgpu::Buffer; 2],
+    voxel_map: wgpu::Buffer,
+    cur_voxel_lighting: wgpu::Buffer,
+    acc_voxel_lighting: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
     environment: wgpu::Buffer,
     model: wgpu::Buffer,
@@ -191,7 +190,7 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
-                    storage_texture().r32uint().dimension_2d().write_only(),
+                    storage_texture().rg32uint().dimension_2d().write_only(),
                 ),
             ),
             raymarch_swap: device.layout(
@@ -200,7 +199,6 @@ impl Renderer {
                 (
                     storage_texture().r32uint().dimension_2d().write_only(),
                     storage_texture().r32float().dimension_2d().write_only(),
-                    storage_buffer().read_write(),
                 ),
             ),
             raymarch_static: device.layout(
@@ -215,12 +213,13 @@ impl Renderer {
                     sampler().non_filtering(),
                     storage_buffer().read_write(),
                     storage_buffer().read_write(),
+                    storage_buffer().read_write(),
                 ),
             ),
             shadow_gbuffer: device.layout(
                 "shadow_gbuffer",
                 ShaderStages::COMPUTE,
-                storage_texture().r32uint().dimension_2d().read_only(),
+                storage_texture().rg32uint().dimension_2d().read_only(),
             ),
             // ambient_gbuffer: device.layout(
             //     "ambient_gbuffer",
@@ -233,8 +232,6 @@ impl Renderer {
                 (
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
-                    storage_buffer().read_only(),
-                    storage_buffer().read_write(),
                 ),
             ),
             shadow_static: device.layout(
@@ -246,16 +243,17 @@ impl Renderer {
                     storage_buffer().read_only(),
                     texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_write(),
                 ),
             ),
-            resolve_swap: device.layout(
+            resolve: device.layout(
                 "resolve_swap",
                 ShaderStages::COMPUTE,
                 (
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
-                    storage_buffer().read_only(),
                 ),
             ),
             // specular_gbuffer: device.layout(
@@ -313,7 +311,7 @@ impl Renderer {
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
-                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().rg32uint().dimension_2d().read_only(),
                 ),
             ),
             deferred_swap: device.layout(
@@ -322,8 +320,6 @@ impl Renderer {
                 (
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
-                    storage_buffer().read_only(),
-                    storage_buffer().read_only(),
                 ),
             ),
             deferred_static: device.layout(
@@ -336,6 +332,7 @@ impl Renderer {
                     texture().float().dimension_cube(),
                     texture().float().dimension_cube(),
                     texture().float().dimension_2d(),
+                    storage_buffer().read_only(),
                 ),
             ),
             taa_input: device.layout(
@@ -382,7 +379,7 @@ impl Renderer {
             ]),
             resolve: device
                 .compute_pipeline("resolve", &shaders.resolve)
-                .layout(&[&bg_layouts.resolve_swap]),
+                .layout(&[&bg_layouts.resolve]),
             // ambient: device
             //     .compute_pipeline("ambient", &shaders.ambient)
             //     .layout(&[
@@ -548,34 +545,24 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            voxel_map: [
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("voxel_map"),
-                    size: voxel_map_size,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("voxel_map"),
-                    size: voxel_map_size,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-            ],
-            voxel_lighting: [
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("voxel_lighting"),
-                    size: voxel_lighting_size,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("voxel_lighting"),
-                    size: voxel_lighting_size,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-            ],
+            voxel_map: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_map"),
+                size: voxel_map_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            cur_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_lighting"),
+                size: voxel_lighting_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            acc_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("acc_voxel_lighting"),
+                size: leaf_chunks_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             environment: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("environment"),
                 size: std::mem::size_of::<buffers::EnvironmentDataBuffer>() as u64,
@@ -654,6 +641,10 @@ impl Renderer {
                         binding: 7,
                         resource: buffers.voxel_visibility_mask.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: buffers.voxel_map.as_entire_binding(),
+                    },
                 ],
             }),
             raymarch_swap: None,
@@ -661,7 +652,7 @@ impl Renderer {
             // ambient_gbuffer: None,
             shadow_swap: None,
             shadow_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ambient_static"),
+                label: Some("shadow_static"),
                 layout: &bg_layouts.shadow_static,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -686,39 +677,31 @@ impl Renderer {
                         binding: 4,
                         resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: buffers.voxel_map.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
+                    },
                 ],
             }),
-            resolve_swap: device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
+            resolve: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("resolve_swap"),
-                layout: &bg_layouts.resolve_swap,
+                layout: &bg_layouts.resolve,
                 entries: &[
-                    SwapchainBindGroupEntry {
+                    wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: SwapchainBindingResource::Swap(
-                            buffers.voxel_map[0].as_entire_binding(),
-                            buffers.voxel_map[1].as_entire_binding(),
-                        ),
+                        resource: buffers.voxel_map.as_entire_binding(),
                     },
-                    SwapchainBindGroupEntry {
+                    wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: SwapchainBindingResource::Swap(
-                            buffers.voxel_map[1].as_entire_binding(),
-                            buffers.voxel_map[0].as_entire_binding(),
-                        ),
+                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
                     },
-                    SwapchainBindGroupEntry {
+                    wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: SwapchainBindingResource::Swap(
-                            buffers.voxel_lighting[0].as_entire_binding(),
-                            buffers.voxel_lighting[1].as_entire_binding(),
-                        ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 3,
-                        resource: SwapchainBindingResource::Swap(
-                            buffers.voxel_lighting[1].as_entire_binding(),
-                            buffers.voxel_lighting[0].as_entire_binding(),
-                        ),
+                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
                     },
                 ],
             }),
@@ -786,6 +769,10 @@ impl Renderer {
                                 ..Default::default()
                             },
                         )),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
                     },
                 ],
             }),
@@ -869,7 +856,7 @@ impl Renderer {
             label: Some("gbuffer_voxel_id"),
             size,
             sample_count: 1,
-            format: wgpu::TextureFormat::R32Uint,
+            format: wgpu::TextureFormat::Rg32Uint,
             dimension: wgpu::TextureDimension::D2,
             usage: wgpu::TextureUsages::STORAGE_BINDING,
             mip_level_count: 1,
@@ -1148,13 +1135,6 @@ impl Renderer {
                         binding: 1,
                         resource: view_gbuffer_depth.both(),
                     },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: SwapchainBindingResource::Swap(
-                            self.buffers.voxel_map[0].as_entire_binding(),
-                            self.buffers.voxel_map[1].as_entire_binding(),
-                        ),
-                    },
                 ],
             },
         ));
@@ -1191,20 +1171,6 @@ impl Renderer {
                     SwapchainBindGroupEntry {
                         binding: 1,
                         resource: view_gbuffer_depth.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: SwapchainBindingResource::Swap(
-                            self.buffers.voxel_map[0].as_entire_binding(),
-                            self.buffers.voxel_map[1].as_entire_binding(),
-                        ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 3,
-                        resource: SwapchainBindingResource::Swap(
-                            self.buffers.voxel_lighting[0].as_entire_binding(),
-                            self.buffers.voxel_lighting[1].as_entire_binding(),
-                        ),
                     },
                 ],
             },
@@ -1454,20 +1420,6 @@ impl Renderer {
                         binding: 1,
                         resource: view_gbuffer_depth.both(),
                     },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: SwapchainBindingResource::Swap(
-                            self.buffers.voxel_map[0].as_entire_binding(),
-                            self.buffers.voxel_map[1].as_entire_binding(),
-                        ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 3,
-                        resource: SwapchainBindingResource::Swap(
-                            self.buffers.voxel_lighting[0].as_entire_binding(),
-                            self.buffers.voxel_lighting[1].as_entire_binding(),
-                        ),
-                    },
                     // SwapchainBindGroupEntry {
                     //     binding: 2,
                     //     // resource: SwapchainBindingResource::Single(
@@ -1664,16 +1616,8 @@ impl Renderer {
 
         encoder.clear_buffer(&self.buffers.voxel_map_info, 0, None);
         encoder.clear_buffer(&self.buffers.voxel_visibility_mask, 0, None);
-        encoder.clear_buffer(
-            &self.buffers.voxel_map[(self.frame_id & 1) as usize],
-            0,
-            None,
-        );
-        encoder.clear_buffer(
-            &self.buffers.voxel_lighting[(self.frame_id & 1) as usize],
-            0,
-            None,
-        );
+        encoder.clear_buffer(&self.buffers.voxel_map, 0, None);
+        encoder.clear_buffer(&self.buffers.cur_voxel_lighting, 0, None);
 
         // raymarch pass
         {
@@ -1708,18 +1652,13 @@ impl Renderer {
             let mut pass = encoder.begin_compute_pass_timed("Resolve", &mut self.timing);
 
             pass.set_pipeline(&self.pipelines.resolve);
-            pass.set_bind_group(
-                0,
-                Some(match self.frame_id & 1 {
-                    0 => &self.bind_groups.resolve_swap.a,
-                    _ => &self.bind_groups.resolve_swap.b,
-                }),
-                &[],
-            );
+            pass.set_bind_group(0, Some(&self.bind_groups.resolve), &[]);
 
-            let workgroups = self.buffers.voxel_map[0]
+            let workgroups = self
+                .buffers
+                .voxel_map
                 .size()
-                .div_ceil(32 * 4 * 2)
+                .div_ceil(256 * 4 * 2)
                 .min(65535) as u32;
 
             pass.insert_debug_marker("resolve");

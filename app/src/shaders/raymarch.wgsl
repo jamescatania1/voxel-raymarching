@@ -1,10 +1,9 @@
 @group(0) @binding(0) var tex_out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_out_velocity: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(2) var tex_out_id: texture_storage_2d<r32uint, write>;
+@group(0) @binding(2) var tex_out_id: texture_storage_2d<rg32uint, write>;
 
 @group(1) @binding(0) var tex_out_normal: texture_storage_2d<r32uint, write>;
 @group(1) @binding(1) var tex_out_depth: texture_storage_2d<r32float, write>;
-@group(1) @binding(2) var<storage, read_write> voxel_map: array<atomic<u32>>; // two words (key, value) per entry
 
 struct VoxelSceneMetadata {
     bounding_size: u32,
@@ -30,6 +29,7 @@ struct VoxelInfo {
 }
 @group(2) @binding(6) var<storage, read_write> voxel_info: VoxelInfo;
 @group(2) @binding(7) var<storage, read_write> visibility_mask: array<atomic<u32>>;
+@group(2) @binding(8) var<storage, read_write> voxel_map: array<atomic<u32>>; // two words (key, value) per entry
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -84,7 +84,7 @@ fn compute_main(in: ComputeIn) {
     let res = trace_scene(pos, in.local_index);
 
     textureStore(tex_out_albedo, pos, vec4(res.albedo, 1.0));
-    textureStore(tex_out_id, pos, vec4(res.voxel_id, 0, 0, 0));
+    textureStore(tex_out_id, pos, vec4(res.voxel_id, 0, 0));
     textureStore(tex_out_normal, pos, vec4(res.normal, 0, 0, 0));
     textureStore(tex_out_depth, pos, vec4(res.depth, 0.0, 0.0, 1.0));
     textureStore(tex_out_velocity, pos, vec4(res.velocity, 0.0, 1.0));
@@ -95,7 +95,7 @@ struct SceneResult {
     normal: u32,
     depth: f32,
     velocity: vec2<f32>,
-    voxel_id: u32,
+    voxel_id: vec2<u32>,
 }
 
 fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
@@ -110,7 +110,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let hit = raymarch(start_ray(ray_uv), local_index);
 
     if hit.hit {
-        map_insert(hit.id);
+        map_insert(hit.leaf_index);
         // if atomicOr(&visibility_mask[ray.leaf_index >> 3u], 1u << (ray.leaf_index & 7u)) == 0u {
         // set visibility bitmask
         //     let queue_index = atomicAdd(&voxel_info.visible_count, 1u);
@@ -156,7 +156,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
 
     var res: SceneResult;
     res.albedo = albedo;
-    res.voxel_id = hit.id;
+    res.voxel_id = vec2<u32>(hit.leaf_index, hit.id);
     res.normal = packed;
     res.depth = depth;
     res.velocity = velocity;
