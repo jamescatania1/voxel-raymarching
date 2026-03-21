@@ -102,6 +102,7 @@ fn compute_main(in: ComputeIn) {
     // let ls_pos = ray.origin + ray.direction * ray_length;
 
     let noise = blue_noise(in.id.xy);
+    // let noise = blue_noise(vec2<u32>(voxel_pos.xy));
 
     var lighting_incr: u32;
     if trace_shadow(pos, noise, voxel_pos, in.local_index) {
@@ -231,6 +232,7 @@ fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
     let frame_offset = vec2<u32>(OFFSET * 128.0 * f32(frame_offset_seed));
 
     let id = pos + frame_offset;
+    // let id = pos;
     let sample_pos = vec3<u32>(
         id.x & 0x7fu,
         id.y & 0x7fu,

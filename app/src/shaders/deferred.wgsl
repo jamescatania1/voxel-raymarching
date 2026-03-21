@@ -81,9 +81,9 @@ fn compute_main(in: ComputeIn) {
     // let map_val = map_get(voxel_id);
 
     let shadow_packed = voxel_lighting[voxel_id];
-    let shadow_length = max(shadow_packed & 0xFFFFu, 1u);
-    let shadow_count = min(shadow_length, shadow_packed >> 16u);
-    let shadow = 1.0 - f32(shadow_count) / f32(shadow_length);
+    // let shadow_length = max(shadow_packed & 0xFFFFu, 1u);
+    // let shadow_count = min(shadow_length, shadow_packed >> 16u);
+    let shadow = saturate(1.0 - f32(shadow_packed >> 8u) / 16777215.0);
 
     // var shadow = 0.0;
     // if map_val.exists {

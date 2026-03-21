@@ -237,6 +237,9 @@ fn emit_voxel(center: vec3<f32>) {
     let uv = weights.x * sample.uv_0 + weights.y * sample.uv_1 + weights.z * sample.uv_2;
 
     let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+    if albedo.a < 0.8 {
+        return;
+    }
     let palette_pos = vec3<u32>(albedo.rgb * 255.0 + 0.5);
     let palette_index = textureLoad(tex_palette_lut, palette_pos).r;
 

@@ -46,7 +46,7 @@ struct ComputeIn {
 
 var<workgroup> stack: array<array<u32, 11>, 64>;
 
-const MAX_HISTORY_LENGTH: u32 = 2048u;
+const MAX_HISTORY_LENGTH: u32 = 64u;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
@@ -60,33 +60,48 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
-    let cur_shadow = cur_voxel_lighting[index];
-    var cur_visible_count = cur_shadow & 0xFFFFu;
-    var cur_shadow_count = min(cur_visible_count, cur_shadow >> 16u);
-
-    if cur_visible_count >= MAX_HISTORY_LENGTH {
-        let diff = cur_visible_count - MAX_HISTORY_LENGTH;
-        let shadow = f32(cur_shadow_count) / f32(cur_visible_count);
-        cur_shadow_count -= u32(round(shadow * f32(diff)));
-        cur_visible_count -= diff;
+    let cur = cur_voxel_lighting[index];
+    let cur_visible = cur & 0xFFFFu;
+    if cur_visible == 0u {
+        return;
     }
+    let cur_shadow_count = min(cur_visible, cur >> 16u);
+    let cur_shadow = f32(cur_shadow_count) / f32(cur_visible);
 
     let acc = acc_voxel_lighting[key];
-    var acc_length = acc & 0xFFFFu;
-    var acc_shadow_count = min(acc_length, acc >> 16u);
+    let acc_shadow = f32(acc >> 8u) / 16777215.0;
+    let history_len = min(MAX_HISTORY_LENGTH, (acc & 0xFFu) + 1u);
 
-    if acc_length >= MAX_HISTORY_LENGTH {
-        let diff = acc_length - MAX_HISTORY_LENGTH + cur_visible_count;
-        let shadow = f32(acc_shadow_count) / f32(acc_length);
-        acc_shadow_count -= u32(round(shadow * f32(diff)));
-        acc_length -= diff;
-    }
-    acc_length += cur_visible_count;
-    acc_shadow_count += cur_shadow_count;
+    let alpha = 1.0 / f32(history_len);
+    let res_shadow = mix(acc_shadow, cur_shadow, alpha);
 
-    acc_voxel_lighting[key] = (acc_shadow_count << 16u) | acc_length;
+    let res = ((u32(res_shadow * 16777215.0) & 0xFFFFFFu) << 8u) | history_len;
+    acc_voxel_lighting[key] = res;
+    // let res_length = min(MAX_HISTORY_LENGTH, acc_length + cur_length);
+    // let res_shadow = f32(cur_shadow_count + acc_shadow_count) / f32(cur_length + acc_length);
+    // let res_shadow_count = u32(ceil(res_shadow * f32(res_length)));
+    // if acc_length + cur_length > MAX_HISTORY_LENGTH {
+    //     return;
+    // }
 
-    // acc_voxel_lighting[key] = acc_voxel_lighting[key] *(1.0 - ACC_ALPHA) + shadow *ACC_ALPHA;
+    // let res_length = min(MAX_HISTORY_LENGTH, acc_length + cur_length);
 
-    // cur_voxel_lighting[cur_index] = bitcast<u32>(shadow);
+
+    // if cur_visible_count >= MAX_HISTORY_LENGTH {
+    //     let diff = cur_visible_count - MAX_HISTORY_LENGTH;
+    //     let shadow = f32(cur_shadow_count) / f32(cur_visible_count);
+    //     cur_shadow_count -= u32(round(shadow * f32(diff)));
+    //     cur_visible_count -= diff;
+    // }
+
+
+    // if acc_length + cur_visible_count >= MAX_HISTORY_LENGTH {
+    //     let diff = acc_length - MAX_HISTORY_LENGTH + cur_visible_count;
+    //     let shadow = f32(acc_shadow_count) / f32(acc_length);
+    //     acc_shadow_count -= u32(round(shadow * f32(diff)));
+    //     acc_length -= diff;
+    // }
+    // acc_length += cur_visible_count;
+    // acc_shadow_count += cur_shadow_count;
+
 }

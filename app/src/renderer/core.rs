@@ -459,8 +459,8 @@ impl Renderer {
         };
 
         // see build script
-        let scene = MODELS.bistro.load(device, queue).unwrap();
-        let ibl = LIGHTMAPS.partly_cloudy.load(device, queue).unwrap();
+        let scene = MODELS.sponza.load(device, queue).unwrap();
+        let ibl = LIGHTMAPS.indoor.load(device, queue).unwrap();
 
         let textures = Textures {
             gbuffer_albedo: None,
