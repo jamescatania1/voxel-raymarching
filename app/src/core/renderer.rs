@@ -154,7 +154,7 @@ struct Textures {
     // gbuffer_filter_result: Option<SwapchainTexture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
-    noise_sphere_gauss: wgpu::Texture,
+    noise_vector3_uniform: wgpu::Texture,
 }
 
 struct Samplers {
@@ -526,7 +526,10 @@ impl Renderer {
             // gbuffer_filter_result: None,
             deferred_output: None,
             out_color: None,
-            noise_sphere_gauss: noise::noise_sphere_gauss(device, queue).unwrap(),
+            noise_vector3_uniform: noise::noise_vector3_uniform_binomial3x3_exp_product(
+                device, queue,
+            )
+            .unwrap(),
         };
 
         let samplers = Samplers {
@@ -690,7 +693,9 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_sphere_gauss.create_view(&Default::default()),
+                            &textures
+                                .noise_vector3_uniform
+                                .create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -741,7 +746,9 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_sphere_gauss.create_view(&Default::default()),
+                            &textures
+                                .noise_vector3_uniform
+                                .create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -781,7 +788,9 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_sphere_gauss.create_view(&Default::default()),
+                            &textures
+                                .noise_vector3_uniform
+                                .create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -862,7 +871,9 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_sphere_gauss.create_view(&Default::default()),
+                            &textures
+                                .noise_vector3_uniform
+                                .create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {

@@ -6,6 +6,7 @@ struct VisibleVoxel {
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
+    ao: f32,
     history_length: u32,
 }
 @group(0) @binding(0) var<storage, read> visible_voxels: array<VisibleVoxel>;
@@ -70,8 +71,8 @@ fn compute_main(in: ComputeIn) {
 
     let alpha = 1.0 / f32(acc.history_length);
     acc.shadow = mix(acc.shadow, cur.shadow, alpha);
-    // acc.shadow = cur.shadow;
     acc.irradiance = mix(acc.irradiance, cur.irradiance, alpha);
+    acc.ao = mix(acc.ao, cur.ao, alpha);
 
     acc_voxel_lighting[visible.leaf_index] = pack_voxel_lighting(acc);
 }
@@ -80,7 +81,7 @@ fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
     return array<u32, 3>(
         pack2x16float(value.irradiance.rg),
         pack2x16float(vec2(value.irradiance.b, value.shadow)),
-        value.history_length,
+        (u32(65535.0 * value.ao + 0.5) << 16u) | (value.history_length & 0xFFFFu),
     );
 }
 fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
@@ -90,6 +91,7 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     var res: VoxelLighting;
     res.irradiance = vec3(irr_rg, irr_b_shadow.r);
     res.shadow = irr_b_shadow.y;
-    res.history_length = packed[2];
+    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.history_length = packed[2] & 0xFFFFu;
     return res;
 }

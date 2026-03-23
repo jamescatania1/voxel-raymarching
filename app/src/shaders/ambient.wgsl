@@ -18,6 +18,7 @@ struct VisibleVoxel {
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
+    ao: f32,
     history_length: u32,
 }
 @group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
@@ -94,13 +95,19 @@ fn compute_main(in: ComputeIn) {
 
     var res = unpack_voxel_lighting(voxel_lighting[in.id.x]);
 
-    let irradiance = trace_ambient(noise, voxel_center, in.local_index, voxel.ls_hit_normal);
-    res.irradiance = irradiance;
+    let trace = trace_ambient(noise, voxel_center, in.local_index, voxel.ls_hit_normal);
+    res.irradiance = trace.irradiance;
+    res.ao = trace.ao;
 
     voxel_lighting[in.id.x] = pack_voxel_lighting(res);
 }
 
-fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> vec3<f32> {
+struct AmbientResult {
+    irradiance: vec3<f32>,
+    ao: f32,
+}
+
+fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> AmbientResult {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
     let u = f32(reverseBits(frame.frame_id)) * 2.3283064365386963e-10;
@@ -134,12 +141,15 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
 
         let diffuse = (direct + lighting.irradiance) * albedo;
 
-        return diffuse;
+        let ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
+
+        return AmbientResult(diffuse, ao_weight * ao_weight);
     } else {
         let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
         var sky_color = textureSampleLevel(tex_skybox, sampler_linear, ws_ray_dir.xzy, 0.0).rgb;
         sky_color = min(sky_color, vec3(15.0));
-        return sky_color;
+
+        return AmbientResult(sky_color, 1.0);
     }
 }
 
@@ -448,10 +458,9 @@ fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
     return array<u32, 3>(
         pack2x16float(value.irradiance.rg),
         pack2x16float(vec2(value.irradiance.b, value.shadow)),
-        value.history_length,
+        (u32(65535.0 * value.ao + 0.5) << 16u) | (value.history_length & 0xFFFFu),
     );
 }
-
 fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     let irr_rg = unpack2x16float(packed[0]);
     let irr_b_shadow = unpack2x16float(packed[1]);
@@ -459,7 +468,8 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     var res: VoxelLighting;
     res.irradiance = vec3(irr_rg, irr_b_shadow.r);
     res.shadow = irr_b_shadow.y;
-    res.history_length = packed[2];
+    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.history_length = packed[2] & 0xFFFFu;
     return res;
 }
 

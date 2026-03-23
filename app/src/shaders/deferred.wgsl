@@ -4,6 +4,7 @@ override dielectric_specular: f32 = 0.04;
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
+    ao: f32,
     history_length: u32,
 }
 
@@ -108,6 +109,7 @@ fn compute_main(in: ComputeIn) {
     surface.roughness = max(voxel.roughness, min_roughness);
     surface.shadow = lighting.shadow;
     surface.irradiance = lighting.irradiance;
+    surface.ao = lighting.ao;
     surface.specular = specular;
     var color = pbr(surface);
 
@@ -136,10 +138,12 @@ fn compute_main(in: ComputeIn) {
                 color += vec3(lighting.shadow);
             }
             case 8u {
-                color += surface.irradiance;
+                // color += surface.irradiance;
+                color += vec3(lighting.ao);
             }
             case 9u {
-                color += vec3(surface.specular);
+                // color += vec3(surface.specular);
+                color += specc;
             }
             case 10u {
                 color += vec3(abs(velocity), 0.0);
@@ -168,6 +172,8 @@ fn compute_main(in: ComputeIn) {
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
 }
 
+var<private> specc: vec3<f32>;
+
 struct PbrInput {
     uv: vec2<f32>,
     ws_pos: vec3<f32>,
@@ -178,6 +184,7 @@ struct PbrInput {
     specular: vec3<f32>,
     shadow: f32,
     irradiance: vec3<f32>,
+    ao: f32,
 }
 
 fn pbr(in: PbrInput) -> vec3<f32> {
@@ -217,13 +224,18 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let ndv = clamp(dot(N, V), 0.0001, 1.0);
         let vdh = saturate(dot(V, H));
 
-        // let sky_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, N.xzy, 0.0).rgb * environment.indirect_sky_intensity;
-        // let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
+        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
         let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
         let diffuse = k_d * in.irradiance * in.albedo / PI;
 
-        // let specular = sky_prefilter * (f_0 * sky_brdf.x + sky_brdf.y);
+        let smoothing = exp2(-16.0 * in.roughness - 1.0);
+        let specular_occlusion = saturate(pow(ndv + in.ao, smoothing) - 1.0 + in.ao);
+
+        let ibl_occluded = specular_occlusion * sky_prefilter;
+        specc = ibl_occluded;
+
+        // let specular = ibl_occluded * (f_0 * sky_brdf.x + sky_brdf.y);
         let specular = in.specular * (f_0 * sky_brdf.x + sky_brdf.y);
 
         indirect = diffuse + specular;
@@ -344,6 +356,7 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     var res: VoxelLighting;
     res.irradiance = vec3(irr_rg, irr_b_shadow.r);
     res.shadow = irr_b_shadow.y;
-    res.history_length = packed[2];
+    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.history_length = packed[2] & 0xFFFFu;
     return res;
 }

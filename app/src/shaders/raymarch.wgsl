@@ -171,8 +171,8 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
-    // let packed = repack_voxel(ws_normal, voxel.metallic, 0.01, hit.hit_mask, ray.direction);
-    let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
+    let packed = repack_voxel(ws_normal, voxel.metallic, 0.01, hit.hit_mask, ray.direction);
+    // let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
 
     if map_result.inserted {
         var visible: VisibleVoxel;

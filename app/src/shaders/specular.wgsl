@@ -23,6 +23,7 @@ struct VisibleVoxel {
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
+    ao: f32,
     history_length: u32,
 }
 @group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
@@ -112,7 +113,7 @@ fn compute_main(in: ComputeIn) {
 
 fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal: vec3<f32>, roughness: f32) -> vec3<f32> {
     let camera_pos = (model.inv_transform * vec4<f32>(environment.camera.ws_position, 1.0)).xyz;
-    let V = normalize(camera_pos - ls_pos);
+    let wi = normalize(camera_pos - ls_pos);
 
     const HALTON_16: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
         vec2(0.500000, 0.333333),
@@ -131,9 +132,9 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
     var above_horizon = false;
     for (var i = 0u; i < 4u; i++) {
         let sample = fract(HALTON_16[i] + noise.xy);
-        let H = importance_sample_vndf(sample, V, ls_normal, roughness);
+        let H = sample_vndf_ggx(sample, wi, ls_normal, roughness);
 
-        dir = normalize(reflect(-V, H));
+        dir = normalize(reflect(-wi, H));
         if dot(ls_normal, dir) > 0.0 {
             above_horizon = true;
             break;
@@ -142,7 +143,8 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
     if !above_horizon {
         // couldn't find one, just return 0 here
         // shouldn't happen enough to be noticable
-        return vec3(0.0);
+        // return vec3(0.0);
+        return vec3(0.0, 1.0, 0.0);
     }
 
     var in: Ray;
@@ -174,25 +176,6 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
         sky_color = min(sky_color, vec3(15.0));
         return sky_color;
     }
-}
-
-// noise from https://github.com/electronicarts/fastnoise/blob/main/FastNoiseDesign.md
-fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
-    const FRACT_PHI: f32 = 0.61803398875;
-    const FRACT_SQRT_2: f32 = 0.41421356237;
-    const OFFSET: vec2<f32> = vec2<f32>(FRACT_PHI, FRACT_SQRT_2);
-
-    let frame_offset_seed = (frame.frame_id >> 5u) & 0xffu;
-    let frame_offset = vec2<u32>(OFFSET * 128.0 * f32(frame_offset_seed));
-
-    let id = pos + frame_offset;
-    let sample_pos = vec3<u32>(
-        id.x & 0x7fu,
-        id.y & 0x7fu,
-        frame.frame_id & 0x1fu,
-    );
-    let noise = textureLoad(tex_noise, sample_pos, 0).rgb;
-    return noise;
 }
 
 struct Ray {
@@ -360,67 +343,55 @@ fn primary_ray(uv: vec2<f32>) -> Ray {
     return ray;
 }
 
-fn importance_sample_ggx(noise: vec2<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
-    let a: f32 = roughness * roughness;
+// noise from https://github.com/electronicarts/fastnoise/blob/main/FastNoiseDesign.md
+fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
+    const FRACT_PHI: f32 = 0.61803398875;
+    const FRACT_SQRT_2: f32 = 0.41421356237;
+    const OFFSET: vec2<f32> = vec2<f32>(FRACT_PHI, FRACT_SQRT_2);
 
-    let phi: f32 = 2.0 * PI * noise.x;
-    let cos_t: f32 = sqrt((1.0 - noise.y) / (1.0 + (a * a - 1.0) * noise.y));
-    let sin_t: f32 = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    let frame_offset_seed = (frame.frame_id >> 5u) & 0xffu;
+    let frame_offset = vec2<u32>(OFFSET * 128.0 * f32(frame_offset_seed));
 
-    let h = vec3<f32>(cos(phi) * sin_t, sin(phi) * sin_t, cos_t);
-
-    let up = select(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), abs(N.z) < 0.999);
-    let tangent_x: vec3<f32> = normalize(cross(up, N));
-    let tangent_y: vec3<f32> = cross(N, tangent_x);
-
-    return tangent_x * h.x + tangent_y * h.y + N * h.z;
+    let id = pos + frame_offset;
+    let sample_pos = vec3<u32>(
+        id.x & 0x7fu,
+        id.y & 0x7fu,
+        frame.frame_id & 0x1fu,
+    );
+    let noise = textureLoad(tex_noise, sample_pos, 0).rgb;
+    return noise;
 }
 
 // importance samples the visible portion of the ggx distribution
-// excellent writeup, successor to Heitz' VNDF for isotropic materials, which is all i've got rn
-// https://auzaiffe.wordpress.com/2024/04/15/vndf-importance-sampling-an-isotropic-distribution/
-fn importance_sample_vndf(noise: vec2<f32>, V: vec3<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
-    let r = roughness * roughness;
+// successor to Heitz' VNDF for isotropic materials, which is all i've got rn
+// https://gist.github.com/jdupuy/4c6e782b62c92b9cb3d13fbb0a5bd7a0#file-samplevndf_ggx-cpp
+fn sample_vndf_ggx(noise: vec2<f32>, wi: vec3<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let a = roughness * roughness;
 
-    let wi_z = -N * dot(V, N);
-    let wi_xy = V + wi_z;
+    let wi_z = N * dot(wi, N);
+    let wi_xy = wi - wi_z;
 
-    let wm = -normalize(r * wi_xy + wi_z);
-    let zm = dot(wm, N);
+    let wi_std = normalize(wi_z - a * wi_xy);
+    let wi_std_z = dot(wi_std, N);
 
-    let z = 1.0 - noise.y * (1.0 + zm);
-    let sin_t = sqrt(max(0.0, 1.0 - z * z));
-    let phi = 2.0 * 3.14159265359 * noise.x - 3.14159265359;
-    let nrm = vec3<f32>(sin_t * cos(phi), sin_t * sin(phi), z);
+    let phi = (2.0 * noise.x - 1.0) * PI;
+    let z = (1.0 - noise.y) * (1.0 + wi_std_z) - wi_std_z;
+    let sin_t = sqrt(saturate(1.0 - z * z));
+    let x = sin_t * cos(phi);
+    let y = sin_t * sin(phi);
 
-    let up = vec3<f32>(0.0, 0.0, 1.000001);
+    let c_std = vec3(x, y, z);
+    let up = vec3(0.0, 0.0, 1.000001);
     let wr = N + up;
-    let c = dot(wr, nrm) * wr / wr.z - nrm;
+    let c = dot(wr, c_std) * wr / wr.z - c_std;
 
-    let wm_std = c + wm;
+    let wm_std = c + wi_std;
     let wm_std_z = N * dot(N, wm_std);
     let wm_std_xy = wm_std_z - wm_std;
 
-    return normalize(r * wm_std_xy + wm_std_z);
-}
+    let wm = normalize(wm_std_z + a * wm_std_xy);
 
-// aligns dir to n's tangent space
-fn align_direction(dir: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    var tangent = vec3<f32>(0.0);
-    var bitangent = vec3<f32>(0.0);
-    if n.z < 0.0 {
-        let a = 1.0 / (1.0 - n.z);
-        let b = n.x * n.y * a;
-        tangent = vec3(1.0 - n.x * n.x * a, -b, n.x);
-        bitangent = vec3(b, n.y * n.y * a - 1.0, -n.y);
-    }
-    else {
-        let a = 1.0 / (1.0 + n.z);
-        let b = -n.x * n.y * a;
-        tangent = vec3(1.0 - n.x * n.x * a, b, -n.x);
-        bitangent = vec3(b, 1.0 - n.y * n.y * a, -n.y);
-    }
-    return normalize(tangent * dir.x + bitangent * dir.y + n * dir.z);
+    return wm;
 }
 
 struct Voxel {
@@ -504,6 +475,7 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     var res: VoxelLighting;
     res.irradiance = vec3(irr_rg, irr_b_shadow.r);
     res.shadow = irr_b_shadow.y;
-    res.history_length = packed[2];
+    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.history_length = packed[2] & 0xFFFFu;
     return res;
 }
