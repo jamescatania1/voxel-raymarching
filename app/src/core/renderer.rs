@@ -151,6 +151,7 @@ struct Textures {
     gbuffer_normal: Option<SwapchainTexture>,
     gbuffer_depth: Option<SwapchainTexture>,
     gbuffer_velocity: Option<wgpu::Texture>,
+    gbuffer_specular_velocity: Option<wgpu::Texture>,
     gbuffer_specular: Option<wgpu::Texture>,
     gbuffer_acc_specular: Option<SwapchainTexture>,
     // gbuffer_shadow: Option<wgpu::Texture>,
@@ -282,7 +283,10 @@ impl Renderer {
             specular_gbuffer: device.layout(
                 "specular_gbuffer",
                 ShaderStages::COMPUTE,
-                storage_texture().rgba16float().dimension_2d().write_only(),
+                (
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                ),
             ),
             specular_swap: device.layout(
                 "specular_swap",
@@ -312,6 +316,7 @@ impl Renderer {
                 ShaderStages::COMPUTE,
                 (
                     sampler().filtering(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
                 ),
@@ -515,6 +520,7 @@ impl Renderer {
             gbuffer_normal: None,
             gbuffer_depth: None,
             gbuffer_velocity: None,
+            gbuffer_specular_velocity: None,
             gbuffer_specular: None,
             gbuffer_acc_specular: None,
             // gbuffer_shadow: None,
@@ -1128,6 +1134,24 @@ impl Renderer {
             .unwrap()
             .create_view(&Default::default());
 
+        self.textures.gbuffer_specular_velocity =
+            Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_specular_velocity"),
+                size,
+                sample_count: 1,
+                format: wgpu::TextureFormat::Rgba16Float,
+                dimension: wgpu::TextureDimension::D2,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                mip_level_count: 1,
+                view_formats: &[],
+            }));
+        let view_gbuffer_specular_velocity = self
+            .textures
+            .gbuffer_specular_velocity
+            .as_ref()
+            .unwrap()
+            .create_view(&Default::default());
+
         self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_specular"),
             size: size,
@@ -1241,10 +1265,18 @@ impl Renderer {
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("specular_gbuffer"),
                 layout: &self.bg_layouts.specular_gbuffer,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &view_gbuffer_specular_velocity,
+                        ),
+                    },
+                ],
             }));
 
         self.bind_groups.specular_swap = Some(device.create_bind_group_swap(
@@ -1280,6 +1312,12 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(
+                            &view_gbuffer_specular_velocity,
+                        ),
                     },
                 ],
             }));

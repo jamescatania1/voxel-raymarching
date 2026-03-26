@@ -1,6 +1,7 @@
 @group(0) @binding(0) var main_sampler: sampler;
 @group(0) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_cur: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(3) var tex_specular_velocity: texture_storage_2d<rgba16float, read>;
 
 @group(1) @binding(0) var tex_out: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(1) var tex_acc: texture_storage_2d<rgba16float, read>;
@@ -95,7 +96,12 @@ fn compute_main(in: ComputeIn) {
         res_color = mix(acc_sample, cur_color, alpha_color);
     }
 
-    textureStore(tex_out, cur_pos, vec4<f32>(res_color, history_len));
+    let spec_vel_data = textureLoad(tex_specular_velocity, cur_pos);
+    let is_spec_hit = spec_vel_data.z > 0.0;
+
+    let encoded_history = select(-history_len, history_len, is_spec_hit);
+
+    textureStore(tex_out, cur_pos, vec4<f32>(res_color, encoded_history));
 }
 
 struct ReprojectResult {
@@ -118,11 +124,6 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     let cur_packed = textureLoad(tex_normal, cur_pos).r;
     let cur = gather_surface(cur_uv + cur_jitter, environment.camera.inv_view_proj, cur_depth, cur_packed);
 
-    let velocity = textureLoad(tex_velocity, cur_pos).rg;
-
-    let acc_uv = cur_uv - velocity;
-    let acc_pos = acc_uv * vec2<f32>(dimensions);
-
     var res: ReprojectResult;
     res.reject_history = true;
     res.history_len = 0.0;
@@ -132,6 +133,24 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     if cur.is_sky {
         return res;
     }
+
+    let spec_vel_data = textureLoad(tex_specular_velocity, cur_pos);
+    let virtual_velocity = spec_vel_data.rg;
+    let is_spec_hit = spec_vel_data.z > 0.0; // 1.0 is hit, -1.0 is sky
+
+    let prev_clip = environment.prev_camera.view_proj * vec4<f32>(cur.ws_pos, 1.0);
+    let prev_ndc = prev_clip.xy / prev_clip.w;
+    let prev_surface_uv = prev_ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    let surface_velocity = cur_uv - prev_surface_uv;
+
+    // blend between standard diffuse velocity -> parallax specular velocity based on roughness (1-0)
+    // squaring roughness seems to work alright here
+    // it's all a big old approximation anyways
+    let roughness_weight = saturate(cur.roughness * cur.roughness);
+    let velocity = mix(virtual_velocity, surface_velocity, roughness_weight);
+
+    let acc_uv = cur_uv - velocity;
+    let acc_pos = acc_uv * vec2<f32>(dimensions);
 
     {
         // start with 2x2 bilinear filter
@@ -187,7 +206,14 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     }
 
     if !res.reject_history {
-        res.history_len = textureLoad(tex_acc, vec2<i32>(acc_pos)).a;
+        let raw_history = textureLoad(tex_acc, vec2<i32>(acc_pos)).a;
+        let history_is_hit = raw_history > 0.0;
+
+        if raw_history != 0.0 && is_spec_hit != history_is_hit {
+            res.reject_history = true; // secondary hit -> sky counts as a rejection
+        } else {
+            res.history_len = abs(raw_history);
+        }
     }
 
     return res;
@@ -216,6 +242,7 @@ struct SurfaceData {
     ws_pos: vec3<f32>,
     ws_normal: vec3<f32>,
     ws_hit_normal: vec3<f32>,
+    roughness: f32,
 }
 
 fn gather_surface(uv: vec2<f32>, inv_view_proj: mat4x4<f32>, depth: f32, packed: u32) -> SurfaceData {
@@ -238,6 +265,7 @@ fn gather_surface(uv: vec2<f32>, inv_view_proj: mat4x4<f32>, depth: f32, packed:
     res.ws_pos = ws_pos;
     res.ws_normal = voxel.ws_normal;
     res.ws_hit_normal = ws_hit_normal;
+    res.roughness = voxel.roughness;
     return res;
 }
 

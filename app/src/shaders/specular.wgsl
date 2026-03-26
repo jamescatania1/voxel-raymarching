@@ -1,5 +1,5 @@
 @group(0) @binding(0) var tex_out_specular: texture_storage_2d<rgba16float, write>;
-// @group(0) @binding(1) var tex_out_sepcular_velocity: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1) var tex_out_specular_velocity: texture_storage_2d<rgba16float, write>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
@@ -109,12 +109,38 @@ fn compute_main(in: ComputeIn) {
 
     let noise = blue_noise(in.id.xy);
 
-    var specular = trace_specular(pos, noise, ls_pos, ls_normal, voxel.ls_hit_normal, voxel.roughness);
+    var trace = trace_specular(pos, noise, ls_pos, ls_normal, voxel.ls_hit_normal, voxel.roughness);
 
-    textureStore(tex_out_specular, pos, vec4(specular, 1.0));
+    textureStore(tex_out_specular, pos, vec4(trace.specular, 1.0));
+
+    if !trace.valid {
+        textureStore(tex_out_specular_velocity, pos, vec4(0.0));
+        return;
+    }
+
+    var prev_cs_pos: vec4<f32>;
+    if trace.hit {
+        prev_cs_pos = environment.prev_camera.view_proj * vec4<f32>(trace.hit_pos, 1.0);
+    } else {
+        prev_cs_pos = environment.prev_camera.view_proj * vec4<f32>(trace.dir, 0.0);
+    }
+    let prev_ndc = prev_cs_pos.xy / prev_cs_pos.w;
+    let prev_uv = prev_ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+
+    let velocity = uv - prev_uv;
+    let hit_flag = select(-1.0, 1.0, trace.hit);
+    textureStore(tex_out_specular_velocity, pos, vec4<f32>(velocity, hit_flag, 0.0));
 }
 
-fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal: vec3<f32>, roughness: f32) -> vec3<f32> {
+struct TraceResult {
+    specular: vec3<f32>,
+    hit_pos: vec3<f32>,
+    dir: vec3<f32>,
+    hit: bool,
+    valid: bool,
+}
+
+fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal: vec3<f32>, roughness: f32) -> TraceResult {
     let camera_pos = (model.inv_transform * vec4<f32>(environment.camera.ws_position, 1.0)).xyz;
     let wi = normalize(camera_pos - ls_pos);
 
@@ -146,8 +172,7 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
     if !above_horizon {
         // couldn't find one, just return 0 here
         // shouldn't happen enough to be noticable
-        return vec3(0.0);
-        // return vec3(0.0, 1.0, 0.0);
+        return TraceResult();
     }
 
     var in: Ray;
@@ -179,7 +204,15 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
 
         let diffuse = (direct + lighting.irradiance) * albedo + emissive;
 
-        return diffuse;
+        let ls_hit_pos = in.origin + in.direction * hit.depth;
+        let ws_hit_pos = (model.transform * vec4(ls_hit_pos, 1.0)).xyz;
+
+        var res: TraceResult;
+        res.valid = true;
+        res.specular = diffuse;
+        res.hit = true;
+        res.hit_pos = ws_hit_pos;
+        return res;
     } else {
         let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
         let rot_dir = vec3(
@@ -189,7 +222,13 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
         );
         var sky_color = textureSampleLevel(tex_skybox, sampler_linear, rot_dir.xzy, 0.0).rgb;
         sky_color = min(sky_color, vec3(15.0)) * environment.indirect_sky_intensity;
-        return sky_color;
+
+        var res: TraceResult;
+        res.valid = true;
+        res.specular = sky_color;
+        res.hit = false;
+        res.dir = ws_ray_dir;
+        return res;
     }
 }
 
