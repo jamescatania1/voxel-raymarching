@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    config::{DEBUG_VIEWS, DebugView, TONEMAPPING_ALGORITHMS, TonemappingAlgorithm},
+    config::{Config, DEBUG_VIEWS, DebugView, TONEMAPPING_ALGORITHMS, TonemappingAlgorithm},
     ui::UiCtx,
 };
 
@@ -26,9 +26,10 @@ pub struct DebugWindow {
 
 impl DebugWindow {
     pub fn new() -> Self {
+        let cfg = Config::default();
         Self {
-            view: DEBUG_VIEWS[DebugView::default() as usize],
-            tonemapping: TONEMAPPING_ALGORITHMS[TonemappingAlgorithm::default() as usize],
+            view: DEBUG_VIEWS[cfg.view as usize],
+            tonemapping: TONEMAPPING_ALGORITHMS[cfg.tonemapping as usize],
             ..Default::default()
         }
     }

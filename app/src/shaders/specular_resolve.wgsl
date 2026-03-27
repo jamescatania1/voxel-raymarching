@@ -50,7 +50,7 @@ struct Model {
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
 @group(2) @binding(2) var<uniform> model: Model;
 
-const MAX_HISTORY_LENGTH: u32 = 1024;
+const MAX_HISTORY_LENGTH: u32 = 64;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -116,7 +116,8 @@ fn compute_main(in: ComputeIn) {
         res_color = mix(acc_sample, cur_color, alpha_color);
     }
 
-    textureStore(tex_out, cur_pos, vec4<f32>(res_color, history_len));
+    // textureStore(tex_out, cur_pos, vec4<f32>(res_color, history_len));
+    textureStore(tex_out, cur_pos, vec4<f32>(textureLoad(tex_cur, half_base).rgb, history_len));
 }
 
 struct ReprojectResult {
@@ -218,7 +219,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 }
 
 fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
-    return true;
+    // return true;
     if acc.is_sky {
         return false;
     }

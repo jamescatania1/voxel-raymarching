@@ -173,7 +173,9 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
     if !above_horizon {
         // couldn't find one, just return 0 here
         // shouldn't happen enough to be noticable
-        return TraceResult();
+        var res: TraceResult;
+        res.specular = vec3(1.0, 0.0, 0.0);
+        return res;
     }
 
     var in: Ray;
@@ -231,6 +233,79 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
         res.dir = ws_ray_dir;
         return res;
     }
+}
+
+// importance samples the visible portion of the ggx distribution
+// successor to Heitz' VNDF for isotropic materials, which is all i've got rn
+// https://gist.github.com/jdupuy/4c6e782b62c92b9cb3d13fbb0a5bd7a0#file-samplevndf_ggx-cpp
+fn sample_vndf_ggx(noise: vec2<f32>, wi: vec3<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let a = roughness * roughness;
+
+    let wi_local = to_tangent(wi, N);
+    let V = normalize(vec3(a * wi_local.xy, wi_local.z));
+
+    let phi = (2.0 * noise.x - 1.0) * PI;
+    let z = (1.0 - noise.y) * (1.0 + V.z) - V.z;
+    let sin_t = sqrt(saturate(1.0 - z * z));
+    let x = sin_t * cos(phi);
+    let y = sin_t * sin(phi);
+
+    let h_std = vec3(x, y, z) + V;
+    let h_local = normalize(vec3(a * h_std.xy, max(h_std.z, 0.0)));
+
+    return align_direction(h_local, N);
+}
+
+fn vndf_ggx_pdf(V: vec3<f32>, H: vec3<f32>, N: vec3<f32>, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let a_sq = a * a;
+
+    let ndh = max(dot(N, H), 0.0);
+    let ndv = max(dot(N, V), 1e-6);
+
+    let d = ndh * ndh * (a_sq - 1.0) + 1.0;
+    let ndf_ggx = a_sq / (PI * d * d);
+
+    let g1 = 2.0 * ndv / (ndv + sqrt(a_sq + (1.0 - a_sq) * ndv * ndv));
+
+    return g1 * ndf_ggx / (4.0 * ndv);
+}
+
+fn to_tangent(v: vec3<f32>, N: vec3<f32>) -> vec3<f32> {
+    var T: vec3<f32>;
+    var B: vec3<f32>;
+    if N.z < 0.0 {
+        let a = 1.0 / (1.0 - N.z);
+        let b = N.x * N.y * a;
+        T = vec3(1.0 - N.x * N.x * a, -b, N.x);
+        B = vec3(b, N.y * N.y * a - 1.0, -N.y);
+    } else {
+        let a = 1.0 / (1.0 + N.z);
+        let b = -N.x * N.y * a;
+        T = vec3(1.0 - N.x * N.x * a, b, -N.x);
+        B = vec3(b, 1.0 - N.y * N.y * a, -N.y);
+    }
+    // dot with each basis vector = project into tangent frame
+    return vec3(dot(v, T), dot(v, B), dot(v, N));
+}
+
+// aligns dir to n's tangent space
+fn align_direction(dir: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var tangent = vec3<f32>(0.0);
+    var bitangent = vec3<f32>(0.0);
+    if n.z < 0.0 {
+        let a = 1.0 / (1.0 - n.z);
+        let b = n.x * n.y * a;
+        tangent = vec3(1.0 - n.x * n.x * a, -b, n.x);
+        bitangent = vec3(b, n.y * n.y * a - 1.0, -n.y);
+    }
+    else {
+        let a = 1.0 / (1.0 + n.z);
+        let b = -n.x * n.y * a;
+        tangent = vec3(1.0 - n.x * n.x * a, b, -n.x);
+        bitangent = vec3(b, 1.0 - n.y * n.y * a, -n.y);
+    }
+    return normalize(tangent * dir.x + bitangent * dir.y + n * dir.z);
 }
 
 struct Ray {
@@ -415,38 +490,6 @@ fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
     );
     let noise = textureLoad(tex_noise, sample_pos, 0).rgb;
     return noise;
-}
-
-// importance samples the visible portion of the ggx distribution
-// successor to Heitz' VNDF for isotropic materials, which is all i've got rn
-// https://gist.github.com/jdupuy/4c6e782b62c92b9cb3d13fbb0a5bd7a0#file-samplevndf_ggx-cpp
-fn sample_vndf_ggx(noise: vec2<f32>, wi: vec3<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
-    let a = roughness * roughness;
-
-    let wi_z = N * dot(wi, N);
-    let wi_xy = wi - wi_z;
-
-    let wi_std = normalize(wi_z - a * wi_xy);
-    let wi_std_z = dot(wi_std, N);
-
-    let phi = (2.0 * noise.x - 1.0) * PI;
-    let z = (1.0 - noise.y) * (1.0 + wi_std_z) - wi_std_z;
-    let sin_t = sqrt(saturate(1.0 - z * z));
-    let x = sin_t * cos(phi);
-    let y = sin_t * sin(phi);
-
-    let c_std = vec3(x, y, z);
-    let up = vec3(0.0, 0.0, 1.000001);
-    let wr = N + up;
-    let c = dot(wr, c_std) * wr / wr.z - c_std;
-
-    let wm_std = c + wi_std;
-    let wm_std_z = N * dot(N, wm_std);
-    let wm_std_xy = wm_std_z - wm_std;
-
-    let wm = normalize(wm_std_z + a * wm_std_xy);
-
-    return wm;
 }
 
 struct Voxel {
