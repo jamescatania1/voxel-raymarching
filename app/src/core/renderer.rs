@@ -35,6 +35,7 @@ define_shaders! {
     ambient "../shaders/ambient.wgsl",
     specular "../shaders/specular.wgsl",
     lighting_resolve "../shaders/lighting_resolve.wgsl",
+    specular_spatial "../shaders/specular_spatial.wgsl",
     specular_resolve "../shaders/specular_resolve.wgsl",
     resolve "../shaders/resolve.wgsl",
     atrous "../shaders/atrous.wgsl",
@@ -78,8 +79,8 @@ struct Pipelines {
     ambient: wgpu::ComputePipeline,
     resolve: wgpu::ComputePipeline,
     specular: wgpu::ComputePipeline,
+    specular_spatial: wgpu::ComputePipeline,
     specular_resolve: wgpu::ComputePipeline,
-    // atrous: wgpu::ComputePipeline,
     deferred: wgpu::ComputePipeline,
     taa: wgpu::ComputePipeline,
     fx: wgpu::RenderPipeline,
@@ -91,21 +92,15 @@ struct BindGroupLayouts {
     raymarch_swap: wgpu::BindGroupLayout,
     raymarch_static: wgpu::BindGroupLayout,
     visible_indirect_args: wgpu::BindGroupLayout,
-    // shadow_gbuffer: wgpu::BindGroupLayout,
-    // ambient_gbuffer: wgpu::BindGroupLayout,
-    // shadow_swap: wgpu::BindGroupLayout,
     shadow_static: wgpu::BindGroupLayout,
     ambient_static: wgpu::BindGroupLayout,
     resolve: wgpu::BindGroupLayout,
     specular_gbuffer: wgpu::BindGroupLayout,
     specular_swap: wgpu::BindGroupLayout,
     specular_static: wgpu::BindGroupLayout,
+    spec_spatial_gbuffer: wgpu::BindGroupLayout,
     spec_resolve_gbuffer: wgpu::BindGroupLayout,
     spec_resolve_swap: wgpu::BindGroupLayout,
-    // lighting_resolve_gbuffer: wgpu::BindGroupLayout,
-    // lighting_resolve_swap: wgpu::BindGroupLayout,
-    // atrous_per_pass: wgpu::BindGroupLayout,
-    // atrous_swap: wgpu::BindGroupLayout,
     deferred_gbuffer: wgpu::BindGroupLayout,
     deferred_swap: wgpu::BindGroupLayout,
     deferred_static: wgpu::BindGroupLayout,
@@ -121,21 +116,15 @@ struct BindGroups {
     raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
     visible_indirect_args: wgpu::BindGroup,
-    // shadow_gbuffer: Option<wgpu::BindGroup>,
-    // ambient_gbuffer: Option<wgpu::BindGroup>,
-    // shadow_swap: Option<SwapchainBindGroup>,
     shadow_static: wgpu::BindGroup,
     ambient_static: wgpu::BindGroup,
     resolve: wgpu::BindGroup,
     specular_gbuffer: Option<wgpu::BindGroup>,
     specular_swap: Option<SwapchainBindGroup>,
     specular_static: wgpu::BindGroup,
+    spec_spatial_gbuffer: Option<wgpu::BindGroup>,
     spec_resolve_gbuffer: Option<wgpu::BindGroup>,
     spec_resolve_swap: Option<SwapchainBindGroup>,
-    // atrous_per_pass_primary: Option<SwapchainBindGroup>,
-    // atrous_per_pass_secondary: Option<SwapchainBindGroup>,
-    // atrous_per_pass: Option<[wgpu::BindGroup; ATROUS_PASS_COUNT - 2]>,
-    // atrous_swap: Option<SwapchainBindGroup>,
     deferred_gbuffer: Option<wgpu::BindGroup>,
     deferred_swap: Option<SwapchainBindGroup>,
     deferred_static: wgpu::BindGroup,
@@ -151,15 +140,11 @@ struct Textures {
     gbuffer_normal: Option<SwapchainTexture>,
     gbuffer_depth: Option<SwapchainTexture>,
     gbuffer_velocity: Option<wgpu::Texture>,
-    gbuffer_specular_velocity: Option<wgpu::Texture>,
+    // gbuffer_specular_velocity: Option<wgpu::Texture>,
     gbuffer_specular: Option<wgpu::Texture>,
+    gbuffer_specular_dir_pdf: Option<wgpu::Texture>,
+    gbuffer_specular_spatial: Option<wgpu::Texture>,
     gbuffer_acc_specular: Option<SwapchainTexture>,
-    // gbuffer_shadow: Option<wgpu::Texture>,
-    // gbuffer_illumination: Option<wgpu::Texture>,
-    // gbuffer_acc_illumination: Option<SwapchainTexture>,
-    // gbuffer_acc_illumination_moments: Option<SwapchainTexture>,
-    // gbuffer_acc_illumination_history_len: Option<SwapchainTexture>,
-    // gbuffer_filter_result: Option<SwapchainTexture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
     noise_vector3_uniform: wgpu::Texture,
@@ -176,9 +161,7 @@ struct Buffers {
     voxel_palette: wgpu::Buffer,
     voxel_index_chunks: wgpu::Buffer,
     voxel_leaf_chunks: wgpu::Buffer,
-    // voxel_index_leaf_positions: wgpu::Buffer,
     voxel_map_info: wgpu::Buffer,
-    // voxel_visibility_mask: wgpu::Buffer,
     voxel_map: wgpu::Buffer,
     visible_voxels: wgpu::Buffer,
     visible_indirect_args: wgpu::Buffer,
@@ -286,6 +269,7 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
+                    // storage_texture().rgba16float().dimension_2d().write_only(),
                 ),
             ),
             specular_swap: device.layout(
@@ -311,6 +295,15 @@ impl Renderer {
                     storage_buffer().read_only(),
                 ),
             ),
+            spec_spatial_gbuffer: device.layout(
+                "specular_spatial_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                ),
+            ),
             spec_resolve_gbuffer: device.layout(
                 "specular_resolve_gbuffer",
                 ShaderStages::COMPUTE,
@@ -333,24 +326,6 @@ impl Renderer {
                     storage_texture().r32float().dimension_2d().read_only(),
                 ),
             ),
-            // atrous_per_pass: device.layout(
-            //     "atrous_per_pass",
-            //     ShaderStages::COMPUTE,
-            //     (
-            //         uniform_buffer(),
-            //         storage_texture().rgba16float().dimension_2d().write_only(),
-            //         storage_texture().rgba16float().dimension_2d().read_only(),
-            //     ),
-            // ),
-            // atrous_swap: device.layout(
-            //     "atrous_swap",
-            //     ShaderStages::COMPUTE,
-            //     (
-            //         storage_texture().r32uint().dimension_2d().read_only(),
-            //         storage_texture().r32uint().dimension_2d().read_only(),
-            //         storage_texture().r32float().dimension_2d().read_only(),
-            //     ),
-            // ),
             deferred_gbuffer: device.layout(
                 "deferred_gbuffer",
                 ShaderStages::COMPUTE,
@@ -444,6 +419,13 @@ impl Renderer {
                     &bg_layouts.specular_static,
                     &bg_layouts.per_frame_shared,
                 ]),
+            specular_spatial: device
+                .compute_pipeline("specular_spatial", &shaders.specular_spatial)
+                .layout(&[
+                    &bg_layouts.spec_spatial_gbuffer,
+                    &bg_layouts.specular_swap,
+                    &bg_layouts.per_frame_shared,
+                ]),
             specular_resolve: device
                 .compute_pipeline("specular_resolve", &shaders.specular_resolve)
                 .layout(&[
@@ -451,11 +433,6 @@ impl Renderer {
                     &bg_layouts.spec_resolve_swap,
                     &bg_layouts.per_frame_shared,
                 ]),
-            // atrous: device.compute_pipeline("atrous", &shaders.atrous).layout(&[
-            //     &bg_layouts.atrous_per_pass,
-            //     &bg_layouts.atrous_swap,
-            //     &bg_layouts.per_frame_shared,
-            // ]),
             deferred: device
                 .compute_pipeline("deferred", &shaders.deferred)
                 .layout(&[
@@ -520,15 +497,11 @@ impl Renderer {
             gbuffer_normal: None,
             gbuffer_depth: None,
             gbuffer_velocity: None,
-            gbuffer_specular_velocity: None,
+            // gbuffer_specular_velocity: None,
             gbuffer_specular: None,
+            gbuffer_specular_dir_pdf: None,
+            gbuffer_specular_spatial: None,
             gbuffer_acc_specular: None,
-            // gbuffer_shadow: None,
-            // gbuffer_illumination: None,
-            // gbuffer_acc_illumination: None,
-            // gbuffer_acc_illumination_moments: None,
-            // gbuffer_acc_illumination_history_len: None,
-            // gbuffer_filter_result: None,
             deferred_output: None,
             out_color: None,
             noise_vector3_uniform: noise::noise_vector3_uniform_binomial3x3_exp_product(
@@ -915,14 +888,9 @@ impl Renderer {
                     },
                 ],
             }),
+            spec_spatial_gbuffer: None,
             spec_resolve_gbuffer: None,
             spec_resolve_swap: None,
-            // lighting_resolve_gbuffer: None,
-            // lighting_resolve_swap: None,
-            // atrous_per_pass_primary: None,
-            // atrous_per_pass_secondary: None,
-            // atrous_per_pass: None,
-            // atrous_swap: None,
             deferred_gbuffer: None,
             deferred_swap: None,
             deferred_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1139,24 +1107,6 @@ impl Renderer {
             .unwrap()
             .create_view(&Default::default());
 
-        self.textures.gbuffer_specular_velocity =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_specular_velocity"),
-                size: quarter_size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_specular_velocity = self
-            .textures
-            .gbuffer_specular_velocity
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
-
         self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_specular"),
             size: quarter_size,
@@ -1170,6 +1120,60 @@ impl Renderer {
         let view_gbuffer_specular = self
             .textures
             .gbuffer_specular
+            .as_ref()
+            .unwrap()
+            .create_view(&Default::default());
+
+        // self.textures.gbuffer_specular_velocity =
+        //     Some(device.create_texture(&wgpu::TextureDescriptor {
+        //         label: Some("gbuffer_specular_velocity"),
+        //         size: quarter_size,
+        //         sample_count: 1,
+        //         format: wgpu::TextureFormat::Rgba16Float,
+        //         dimension: wgpu::TextureDimension::D2,
+        //         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        //         mip_level_count: 1,
+        //         view_formats: &[],
+        //     }));
+        // let view_gbuffer_specular_velocity = self
+        //     .textures
+        //     .gbuffer_specular_velocity
+        //     .as_ref()
+        //     .unwrap()
+        //     .create_view(&Default::default());
+
+        self.textures.gbuffer_specular_dir_pdf =
+            Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_specular_direction_pdf"),
+                size: quarter_size,
+                sample_count: 1,
+                format: wgpu::TextureFormat::Rgba16Float,
+                dimension: wgpu::TextureDimension::D2,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                mip_level_count: 1,
+                view_formats: &[],
+            }));
+        let view_gbuffer_specular_dir_pdf = self
+            .textures
+            .gbuffer_specular_dir_pdf
+            .as_ref()
+            .unwrap()
+            .create_view(&Default::default());
+
+        self.textures.gbuffer_specular_spatial =
+            Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_specular_spatial"),
+                size,
+                sample_count: 1,
+                format: wgpu::TextureFormat::Rgba16Float,
+                dimension: wgpu::TextureDimension::D2,
+                usage: wgpu::TextureUsages::STORAGE_BINDING,
+                mip_level_count: 1,
+                view_formats: &[],
+            }));
+        let view_gbuffer_specular_spatial = self
+            .textures
+            .gbuffer_specular_spatial
             .as_ref()
             .unwrap()
             .create_view(&Default::default());
@@ -1278,9 +1282,15 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_specular_velocity,
+                            &view_gbuffer_specular_dir_pdf,
                         ),
                     },
+                    // wgpu::BindGroupEntry {
+                    //     binding: 1,
+                    //     resource: wgpu::BindingResource::TextureView(
+                    //         &view_gbuffer_specular_velocity,
+                    //     ),
+                    // },
                 ],
             }));
 
@@ -1301,6 +1311,30 @@ impl Renderer {
             },
         ));
 
+        self.bind_groups.spec_spatial_gbuffer =
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("specular_spatial_gbuffer"),
+                layout: &self.bg_layouts.spec_spatial_gbuffer,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &view_gbuffer_specular_dir_pdf,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            &view_gbuffer_specular_spatial,
+                        ),
+                    },
+                ],
+            }));
+
         self.bind_groups.spec_resolve_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("specular_resolve_gbuffer"),
@@ -1312,12 +1346,15 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                        resource: wgpu::BindingResource::TextureView(
+                            &view_gbuffer_specular_spatial,
+                        ),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_specular_velocity,
+                            // &view_gbuffer_specular_velocity,
+                            &view_gbuffer_specular_dir_pdf,
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -1399,6 +1436,9 @@ impl Renderer {
                     },
                     SwapchainBindGroupEntry {
                         binding: 2,
+                        // resource: SwapchainBindingResource::Single(
+                        //     wgpu::BindingResource::TextureView(&view_gbuffer_specular_spatial),
+                        // ),
                         resource: view_gbuffer_acc_specular.both(),
                     },
                 ],
@@ -1699,7 +1739,21 @@ impl Renderer {
             pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
         }
 
-        // specular resolve pass
+        // specular spatial filter pass
+        {
+            let mut pass =
+                encoder.begin_compute_pass_timed("Specular Spatial Filter", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.specular_spatial);
+            pass.set_bind_group(0, &self.bind_groups.spec_spatial_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+
+            pass.insert_debug_marker("specular spatial");
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        }
+
+        // // specular resolve pass
         {
             let mut pass = encoder.begin_compute_pass_timed("Specular Resolve", &mut self.timing);
 

@@ -66,40 +66,13 @@ fn compute_main(in: ComputeIn) {
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
     let cur_uv = (vec2<f32>(cur_pos) + 0.5) * texel_size;
-    let half_pos = (vec2<f32>(cur_pos) - 0.5) / 2.0;
-    let half_base = vec2<i32>(floor(half_pos));
-    let f = fract(half_pos);
-
-    let w_spatial = array<f32, 4>(
-        (1.0 - f.x) * (1.0 - f.y),
-        f.x * (1.0 - f.y),
-        (1.0 - f.x) * f.y,
-        f.x * f.y
-    );
-    let offsets = array<vec2<i32>, 4>(
-        vec2(0, 0), vec2(1, 0), vec2(0, 1), vec2(1, 1)
-    );
-    var cur_color = vec3(0.0);
-    var weight_sum = 0.0;
-    for (var i = 0u; i < 4u; i++) {
-        let half_sample_pos = half_base + offsets[i];
-
-        let weight = w_spatial[i];
-        let sample = textureLoad(tex_cur, half_sample_pos).rgb;
-
-        cur_color += sample * weight;
-        weight_sum += weight;
-    }
-    cur_color /= weight_sum;
-
-    // let cur = textureLoad(tex_cur, cur_pos / 2).rgb;
-
-    // let cur_color = vec3<f32>(cur);
 
     let acc = reproject(cur_pos);
 
     var res_color: vec3<f32>;
     var history_len: f32;
+
+    let cur_color = textureLoad(tex_cur, cur_pos).rgb;
 
     if acc.reject_history {
         res_color = cur_color;
@@ -116,8 +89,7 @@ fn compute_main(in: ComputeIn) {
         res_color = mix(acc_sample, cur_color, alpha_color);
     }
 
-    // textureStore(tex_out, cur_pos, vec4<f32>(res_color, history_len));
-    textureStore(tex_out, cur_pos, vec4<f32>(textureLoad(tex_cur, half_base).rgb, history_len));
+    textureStore(tex_out, cur_pos, vec4<f32>(res_color, history_len));
 }
 
 struct ReprojectResult {
@@ -155,7 +127,8 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     // stepping roughness seems to work alright here
     // it's all a big old approximation anyways
     let roughness_weight = select(0.0, 1.0, cur.roughness > 0.3);
-    let velocity = mix(virtual_velocity, surface_velocity, roughness_weight);
+    // let velocity = mix(virtual_velocity, surface_velocity, roughness_weight);
+    let velocity = surface_velocity;
 
     let acc_uv = cur_uv - velocity;
     let acc_pos = acc_uv * vec2<f32>(dimensions);
@@ -219,7 +192,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 }
 
 fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
-    // return true;
+    return true;
     if acc.is_sky {
         return false;
     }

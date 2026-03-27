@@ -35,10 +35,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             init_skybox: LIGHTMAPS.partly_cloudy,
-            init_scene: MODELS.bistro,
-            init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
-            // init_scene: MODELS.sponza,
-            // init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
+            // init_scene: MODELS.bistro,
+            // init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
+            init_scene: MODELS.sponza,
+            init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
             voxel_scale: 1,
             render_scale: 0.5,
             sun_azimuth: -2.5,
@@ -46,7 +46,7 @@ impl Default for Config {
             sun_color: glam::vec3(1.0, 0.95, 0.9),
             sun_intensity: 7.5,
             skybox_rotation: 2.8,
-            shadow_bias: 3.2,
+            shadow_bias: 2.0,
             shadow_spread: 0.05,
             filter_shadows: true,
             shadow_filter_radius: 7.0,
