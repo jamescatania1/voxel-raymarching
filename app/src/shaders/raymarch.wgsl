@@ -132,26 +132,6 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
         return res;
     }
 
-    let map_result = map_insert(hit.leaf_index);
-    let visible_index = map_result.value;
-
-    // if map_result.inserted {
-    //     visible_voxels[visible_index] = hit.}
-    // if hit.hit {
-    //     let res = map_insert(hit.leaf_index);
-    //     if res.inserted {
-    //         visible_voxel_pos[res.value] = hit.id;
-    //     }
-    //     // if atomicOr(&visibility_mask[ray.leaf_index >> 3u], 1u << (ray.leaf_index & 7u)) == 0u {
-    //     // set visibility bitmask
-    //     //     let queue_index = atomicAdd(&voxel_info.visible_count, 1u);
-
-    //     //     let voxel_pos = vec3<u32>(ray.local_pos);
-    //     //     let packed = pack_voxel_pos(voxel_pos);
-    //     //     visible_voxel_queue[queue_index] = packed;
-    //     // }
-    // }
-
     var voxel = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
 
     let ws_pos_h = model.transform * vec4<f32>(hit.local_pos, 1.0);
@@ -170,19 +150,20 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
 
     let albedo = palette_color(voxel.palette_index);
     // voxel.roughness = 0.01;
-    // voxel.roughness *= 0.28;
+    voxel.roughness *= 0.2;
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
     let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction, voxel.is_emissive, voxel.emissive_intensity);
 
+    let map_result = map_insert(hit.leaf_index);
     if map_result.inserted {
         var visible: VisibleVoxel;
         visible.data = packed;
         visible.leaf_index = hit.leaf_index;
         visible.pos = pack_voxel_pos(vec3<u32>(hit.local_pos));
-        visible_voxels[visible_index] = visible;
+        visible_voxels[map_result.visible_index] = visible;
     }
 
     var res: SceneResult;
@@ -313,32 +294,28 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 
 struct MapResult {
     inserted: bool,
-    value: u32,
+    visible_index: u32,
 }
 
-fn map_insert(key: u32) -> MapResult {
-    let n = arrayLength(&voxel_map) >> 1u;
+fn map_insert(leaf_index: u32) -> MapResult {
+    let n = arrayLength(&voxel_map);
 
-    var index = (hash_murmur3(key) % n) << 1u;
-    for (var _i = 0u; _i < 4u; _i++) {
-        let res = atomicCompareExchangeWeak(&voxel_map[index], 0u, key);
+    var index = hash_murmur3(leaf_index) % n;
+    for (var _i = 0u; _i < 10u; _i++) {
+        let res = atomicCompareExchangeWeak(&voxel_map[index], 0u, leaf_index);
         if res.exchanged {
-            let value = atomicAdd(&voxel_info.visible_count, 1u);
-            atomicStore(&voxel_map[index + 1u], value); // this doesn't need to be atomic, it's pretty cheap though
-
             var res: MapResult;
             res.inserted = true;
-            res.value = value;
+            res.visible_index = atomicAdd(&voxel_info.visible_count, 1u);
             return res;
         }
-        if res.old_value == key {
+        if res.old_value == leaf_index {
             return MapResult();
         }
         index += 2u;
     }
 
     // for tracking
-    // and dynamic resizing in the future
     atomicAdd(&voxel_info.failed_to_add, 1u);
     return MapResult();
 }

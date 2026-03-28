@@ -16,7 +16,7 @@ use std::{
 struct Args {
     /// Generate specific models from `app/assets/models`
     #[arg(short, long)]
-    models: bool,
+    models: Option<Vec<String>>,
 
     /// Generate specific models from `app/assets/lightmaps`
     #[arg(short, long)]
@@ -29,11 +29,10 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let generate_all = !args.models && !args.lightmaps;
 
     let (device, queue) = init_device().context("failed to initialize GPU context")?;
 
-    if generate_all || args.lightmaps {
+    if args.lightmaps {
         let sources = walk_asset_sources(Path::new("app/assets/lightmaps"), "hdr")
             .context("error while retrieving lightmap sources")?;
 
@@ -46,9 +45,16 @@ fn main() -> Result<()> {
             .context("error generating lighting")?;
     }
 
-    if generate_all || args.models {
-        let sources = walk_asset_sources(Path::new("app/assets/models"), "glb")
+    if let Some(models) = &args.models {
+        let mut sources = walk_asset_sources(Path::new("app/assets/models"), "glb")
             .context("error while retrieving model sources")?;
+
+        if models.len() > 0 {
+            sources = sources
+                .into_iter()
+                .filter(|src| models.iter().any(|n| n.eq_ignore_ascii_case(&src.name)))
+                .collect();
+        }
 
         eprintln!("Generating models");
         for src in &sources {

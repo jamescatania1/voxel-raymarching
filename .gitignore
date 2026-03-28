@@ -7,3 +7,4 @@
 !app/assets/generated/sponza.voxel
 *.lightmap
 !app/assets/generated/partly_cloudy.lightmap
+/screenshots/uncompressed

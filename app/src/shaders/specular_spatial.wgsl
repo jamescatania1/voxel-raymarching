@@ -130,7 +130,7 @@ fn filter_spatial(in: ComputeIn) -> vec3<f32> {
 
         let brdf = brdf(ndh, ndv, ndl, surface.roughness);
 
-        let weight = min(brdf * ndl / pdf, 1.0);
+        let weight = brdf * ndl / pdf;
         res += specular * weight;
         weight_sum += weight;
     }

@@ -25,7 +25,7 @@ struct VisibleVoxel {
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
-    ao: f32,
+    variance: f32,
     history_length: u32,
 }
 @group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
@@ -112,6 +112,11 @@ fn compute_main(in: ComputeIn) {
     let noise = blue_noise(in.id.xy);
 
     var trace = trace_specular(pos, noise, ls_pos, ls_normal, voxel.ls_hit_normal, voxel.roughness);
+    let max_radiance = 10.0;
+    let lum = dot(trace.specular, vec3(0.2126, 0.7152, 0.0722));
+    if lum > max_radiance {
+        trace.specular *= max_radiance / lum;
+    }
 
     textureStore(tex_out_specular, pos, vec4(trace.specular, select(1.0, -1.0, trace.hit)));
     textureStore(tex_out_specular_dir_pdf, pos, vec4(trace.dir, trace.pdf));
@@ -238,7 +243,7 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
             ws_ray_dir.z,
         );
         var sky_color = textureSampleLevel(tex_skybox, sampler_linear, rot_dir.xzy, 0.0).rgb;
-        sky_color = min(sky_color, vec3(15.0)) * environment.indirect_sky_intensity;
+        sky_color = min(sky_color, vec3(10.0)) * environment.indirect_sky_intensity;
 
         var res: TraceResult;
         res.valid = true;
@@ -612,14 +617,21 @@ fn decode_normal_octahedral_leaf(packed: u32) -> vec3<f32> {
     return normalize(res);
 }
 
+fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
+    return array<u32, 3>(
+        pack2x16float(value.irradiance.rg),
+        pack2x16float(vec2(value.irradiance.b, value.variance)),
+        (u32(saturate(value.shadow) * 65535.0 + 0.5) << 16u) | (value.history_length & 0xFFFFu),
+    );
+}
 fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     let irr_rg = unpack2x16float(packed[0]);
-    let irr_b_shadow = unpack2x16float(packed[1]);
+    let irr_b_variance = unpack2x16float(packed[1]);
 
     var res: VoxelLighting;
-    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
-    res.shadow = irr_b_shadow.y;
-    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.irradiance = vec3(irr_rg, irr_b_variance.x);
+    res.variance = irr_b_variance.y;
+    res.shadow = f32(packed[2] >> 16u) / 65535.0;
     res.history_length = packed[2] & 0xFFFFu;
     return res;
 }

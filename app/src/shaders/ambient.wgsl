@@ -18,7 +18,7 @@ struct VisibleVoxel {
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
-    ao: f32,
+    variance: f32,
     history_length: u32,
 }
 @group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
@@ -99,14 +99,12 @@ fn compute_main(in: ComputeIn) {
 
     let trace = trace_ambient(noise, voxel_center, in.local_index, voxel.ls_hit_normal);
     res.irradiance = trace.irradiance;
-    res.ao = trace.ao;
 
     voxel_lighting[in.id.x] = pack_voxel_lighting(res);
 }
 
 struct AmbientResult {
     irradiance: vec3<f32>,
-    ao: f32,
 }
 
 fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> AmbientResult {
@@ -134,7 +132,7 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
         ws_ray_dir.z,
     );
     var sky_color = textureSampleLevel(tex_skybox, sampler_linear, rot_dir.xzy, 0.0).rgb;
-    sky_color = min(sky_color, vec3(15.0)) * environment.indirect_sky_intensity;
+    sky_color = min(sky_color, vec3(10.0)) * environment.indirect_sky_intensity;
 
     if hit.hit {
         let secondary = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
@@ -159,15 +157,15 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
 
         let diffuse = (direct + lighting.irradiance) * albedo + emissive;
 
-        var ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
-        ao_weight *= ao_weight;
-
+        // var ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
+        // ao_weight *= ao_weight;
         // let radiance = mix(diffuse, sky_color, ao_weight);
-        let radiance = diffuse;
 
-        return AmbientResult(radiance, ao_weight);
+        let irradiance = diffuse;
+
+        return AmbientResult(irradiance);
     } else {
-        return AmbientResult(sky_color, 1.0);
+        return AmbientResult(sky_color);
     }
 }
 
@@ -507,42 +505,18 @@ fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
 fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
     return array<u32, 3>(
         pack2x16float(value.irradiance.rg),
-        pack2x16float(vec2(value.irradiance.b, value.shadow)),
-        (u32(65535.0 * value.ao + 0.5) << 16u) | (value.history_length & 0xFFFFu),
+        pack2x16float(vec2(value.irradiance.b, value.variance)),
+        (u32(saturate(value.shadow) * 65535.0 + 0.5) << 16u) | (value.history_length & 0xFFFFu),
     );
 }
 fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     let irr_rg = unpack2x16float(packed[0]);
-    let irr_b_shadow = unpack2x16float(packed[1]);
+    let irr_b_variance = unpack2x16float(packed[1]);
 
     var res: VoxelLighting;
-    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
-    res.shadow = irr_b_shadow.y;
-    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.irradiance = vec3(irr_rg, irr_b_variance.x);
+    res.variance = irr_b_variance.y;
+    res.shadow = f32(packed[2] >> 16u) / 65535.0;
     res.history_length = packed[2] & 0xFFFFu;
     return res;
 }
-
-
-// struct MapResult {
-//     found: bool,
-//     voxel: VisibleVoxel,
-// }
-
-// fn map_get(key: u32) -> MapResult {
-//     let n = arrayLength(&voxel_map) >> 1u;
-
-//     var index = (hash_murmur3(key) % n) << 1u;
-//     for (var _i = 0u; _i < 4u; _i++) {
-//         if voxel_map[index] == key {
-//             let visible_index = voxel_map[index + 1u];
-//             var res: MapResult;
-//             res.found = true;
-//             res.voxel = visible_voxels[visible_index];
-//             return res;
-//         }
-//         index += 2u;
-//     }
-
-//     return MapResult();
-// }

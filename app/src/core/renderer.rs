@@ -66,7 +66,6 @@ pub struct Renderer {
     quad: Quad,
     frame_id: u32,
     size: glam::UVec2,
-    size_shadow: glam::UVec2,
     render_scale: f32,
     sun_direction: glam::Vec3,
     prev_camera: Option<CameraDataBuffer>,
@@ -165,6 +164,7 @@ struct Buffers {
     voxel_map: wgpu::Buffer,
     visible_voxels: wgpu::Buffer,
     visible_indirect_args: wgpu::Buffer,
+    chunk_lighting: wgpu::Buffer,
     cur_voxel_lighting: wgpu::Buffer,
     acc_voxel_lighting: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
@@ -410,7 +410,7 @@ impl Renderer {
                 .layout(&[&bg_layouts.ambient_static, &bg_layouts.per_frame_shared]),
             resolve: device
                 .compute_pipeline("resolve", &shaders.resolve)
-                .layout(&[&bg_layouts.resolve]),
+                .layout(&[&bg_layouts.resolve, &bg_layouts.per_frame_shared]),
             specular: device
                 .compute_pipeline("specular", &shaders.specular)
                 .layout(&[
@@ -573,15 +573,9 @@ impl Renderer {
                     | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }),
-            // voxel_visibility_mask: device.create_buffer(&wgpu::BufferDescriptor {
-            //     label: Some("voxel_visibility_mask"),
-            //     size: visiblity_mask_size,
-            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            //     mapped_at_creation: false,
-            // }),
             voxel_map: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel_map"),
-                size: voxel_queue_len * 8,
+                size: voxel_queue_len * 4,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -595,6 +589,12 @@ impl Renderer {
                 label: Some("visible_indirect_args"),
                 size: 12,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            }),
+            chunk_lighting: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chunk_lighting"),
+                size: scene.meta.allocated_index_chunks as u64 * 4 * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             cur_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
@@ -993,7 +993,6 @@ impl Renderer {
             frame_id: 0,
             render_scale: 1.0,
             size: Default::default(),
-            size_shadow: Default::default(),
             sun_direction: Default::default(),
             prev_camera: None,
         };
@@ -1718,6 +1717,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.resolve);
             pass.set_bind_group(0, Some(&self.bind_groups.resolve), &[]);
+            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("resolve");
             pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);

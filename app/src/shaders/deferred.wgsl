@@ -4,7 +4,7 @@ override dielectric_specular: f32 = 0.04;
 struct VoxelLighting {
     irradiance: vec3<f32>,
     shadow: f32,
-    ao: f32,
+    variance: f32,
     history_length: u32,
 }
 
@@ -119,7 +119,6 @@ fn compute_main(in: ComputeIn) {
     surface.roughness = max(voxel.roughness, min_roughness);
     surface.shadow = 1.0 - lighting.shadow;
     surface.irradiance = lighting.irradiance;
-    surface.ao = lighting.ao;
     surface.specular = specular;
     var color = pbr(surface);
 
@@ -146,12 +145,10 @@ fn compute_main(in: ComputeIn) {
             color = vec3(surface.shadow);
         }
         case 8u {
-            // color = surface.irradiance;
-            color = specc;
+            color = surface.irradiance;
         }
         case 9u {
             color = vec3(surface.specular);
-            // color = vec3(surface.ao);
         }
         case 10u {
             color = vec3(abs(velocity), 0.0);
@@ -172,8 +169,6 @@ fn compute_main(in: ComputeIn) {
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
 }
 
-var<private> specc: vec3<f32>;
-
 struct PbrInput {
     uv: vec2<f32>,
     ws_pos: vec3<f32>,
@@ -184,7 +179,7 @@ struct PbrInput {
     specular: vec3<f32>,
     shadow: f32,
     irradiance: vec3<f32>,
-    ao: f32,
+    // ao: f32,
 }
 
 fn pbr(in: PbrInput) -> vec3<f32> {
@@ -232,11 +227,9 @@ fn pbr(in: PbrInput) -> vec3<f32> {
 
         let diffuse = k_d * in.irradiance * in.albedo / PI;
 
-        let smoothing = exp2(-16.0 * in.roughness - 1.0);
-        let specular_occlusion = saturate(pow(ndv + 1.0 - in.ao, smoothing) - 1.0 + (1.0 - in.ao));
-
-        let ibl_occluded = specular_occlusion * sky_prefilter;
-        specc = ibl_occluded;
+        // let smoothing = exp2(-16.0 * in.roughness - 1.0);
+        // let specular_occlusion = saturate(pow(ndv + 1.0 - in.ao, smoothing) - 1.0 + (1.0 - in.ao));
+        // let ibl_occluded = specular_occlusion * sky_prefilter;
 
         // let specular = 1.0 * (f_0 * sky_brdf.x + sky_brdf.y);
         // specc = select(ibl_occluded, in.specular, in.roughness < 0.4);
@@ -369,14 +362,21 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
     return normalize(res);
 }
 
+fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
+    return array<u32, 3>(
+        pack2x16float(value.irradiance.rg),
+        pack2x16float(vec2(value.irradiance.b, value.variance)),
+        (u32(saturate(value.shadow) * 65535.0 + 0.5) << 16u) | (value.history_length & 0xFFFFu),
+    );
+}
 fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     let irr_rg = unpack2x16float(packed[0]);
-    let irr_b_shadow = unpack2x16float(packed[1]);
+    let irr_b_variance = unpack2x16float(packed[1]);
 
     var res: VoxelLighting;
-    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
-    res.shadow = irr_b_shadow.y;
-    res.ao = f32(packed[2] >> 16u) / 65535.0;
+    res.irradiance = vec3(irr_rg, irr_b_variance.x);
+    res.variance = irr_b_variance.y;
+    res.shadow = f32(packed[2] >> 16u) / 65535.0;
     res.history_length = packed[2] & 0xFFFFu;
     return res;
 }
