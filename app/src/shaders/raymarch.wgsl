@@ -6,7 +6,9 @@
 @group(1) @binding(1) var tex_out_depth: texture_storage_2d<r32float, write>;
 
 struct VoxelSceneMetadata {
+    size: vec3<u32>,
     bounding_size: u32,
+    probe_size: vec3<u32>,
     index_levels: u32,
     index_chunk_count: u32,
 }
@@ -54,6 +56,7 @@ struct Environment {
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    roughness_multiplier: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
@@ -149,8 +152,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let velocity = cur_uv - prev_uv;
 
     let albedo = palette_color(voxel.palette_index);
-    // voxel.roughness = 0.01;
-    voxel.roughness *= 0.2;
+    voxel.roughness *= environment.roughness_multiplier;
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
@@ -242,12 +244,12 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
             let local_pos = ray.ls_origin + dir * t_total;
 
             let mask = vec3(t_max) >= side_distance;
-            let hit_normal = vec3<i32>(-sign(dir)) * vec3<i32>(mask);
+            let hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
 
             var res: RaymarchResult;
             res.hit = true;
             res.leaf_index = leaf_index;
-            res.hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
+            res.hit_normal = hit_normal;
             res.depth = t_total;
             res.local_pos = ray.ls_origin + dir * t_total;
             res.hit_mask = mask;
@@ -300,19 +302,30 @@ struct MapResult {
 fn map_insert(leaf_index: u32) -> MapResult {
     let n = arrayLength(&voxel_map);
 
+    /// note - this will stop working past 1 billion leaf_index (# leaf index chunks * 64)
+    let key = (leaf_index << 2u) | (frame.frame_id & 3u);
     var index = hash_murmur3(leaf_index) % n;
+
     for (var _i = 0u; _i < 10u; _i++) {
-        let res = atomicCompareExchangeWeak(&voxel_map[index], 0u, leaf_index);
-        if res.exchanged {
-            var res: MapResult;
-            res.inserted = true;
-            res.visible_index = atomicAdd(&voxel_info.visible_count, 1u);
-            return res;
-        }
-        if res.old_value == leaf_index {
+        let cur = atomicLoad(&voxel_map[index]);
+
+        if cur == key {
             return MapResult();
         }
-        index += 2u;
+        if (cur == 0u) || ((cur & 3u) != (frame.frame_id & 3u)) {
+            let res = atomicCompareExchangeWeak(&voxel_map[index], cur, key);
+
+            if res.exchanged {
+                var res: MapResult;
+                res.inserted = true;
+                res.visible_index = atomicAdd(&voxel_info.visible_count, 1u);
+                return res;
+            }
+            if res.old_value == key {
+                return MapResult();
+            }
+        }
+        index = (index + 3u) % n;
     }
 
     // for tracking

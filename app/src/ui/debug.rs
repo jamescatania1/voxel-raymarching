@@ -73,6 +73,11 @@ impl DebugWindow {
                 ui.label("Frame Time");
                 ui.label(format!("{:.2?}", self.frame_avg));
 
+                let gpu_total: Duration = self.pass_avg.iter().map(|(_, t)| t).sum();
+                ui.end_row();
+                ui.label(format!("    Total",));
+                ui.label(format!("{:.2?}", gpu_total));
+
                 for (pass, duration) in &self.pass_avg {
                     ui.end_row();
                     ui.label(format!("    {}", pass));
@@ -194,6 +199,13 @@ impl DebugWindow {
                 ui.label("Per Voxel Normals");
                 ui.add(egui::Slider::new(
                     &mut config.voxel_normal_factor,
+                    0.0..=1.0,
+                ));
+                ui.end_row();
+
+                ui.label("Roughness Multiplier");
+                ui.add(egui::Slider::new(
+                    &mut config.roughness_multiplier,
                     0.0..=1.0,
                 ));
                 ui.end_row();

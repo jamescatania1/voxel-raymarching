@@ -32,6 +32,7 @@ struct Environment {
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    roughness_multiplier: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
@@ -63,7 +64,8 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const MAX_HISTORY_LENGTH: u32 = 1023u;
+// const MAX_HISTORY_LENGTH: u32 = 512u;
+const MAX_HISTORY_LENGTH: u32 = 128u;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
@@ -98,9 +100,8 @@ fn compute_main(in: ComputeIn) {
     let max_history_len = u32(mix(512.0, 8.0, saturate(rel_variance * 4.0)));
 
     // acc.history_length = min(acc.history_length + 1u, max_history_len);
-    acc.variance = m2;
-
     acc.history_length = min(MAX_HISTORY_LENGTH, acc.history_length + 1u);
+    acc.variance = m2;
 
     let alpha = 1.0 / f32(acc.history_length);
     acc.shadow = mix(acc.shadow, cur.shadow, alpha);

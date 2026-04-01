@@ -25,6 +25,7 @@ struct Environment {
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    roughness_multiplier: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }

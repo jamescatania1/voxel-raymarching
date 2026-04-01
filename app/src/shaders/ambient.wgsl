@@ -1,5 +1,7 @@
 struct VoxelSceneMetadata {
+    size: vec3<u32>,
     bounding_size: u32,
+    probe_size: vec3<u32>,
     index_levels: u32,
     index_chunk_count: u32,
 }
@@ -25,16 +27,17 @@ struct VoxelLighting {
 @group(0) @binding(1) var<uniform> palette: Palette;
 @group(0) @binding(2) var<storage, read> index_chunks: array<IndexChunk>;
 @group(0) @binding(3) var<storage, read> leaf_chunks: array<u32>;
-@group(0) @binding(4) var tex_noise: texture_3d<f32>;
-@group(0) @binding(5) var sampler_noise: sampler;
-@group(0) @binding(6) var sampler_linear: sampler;
-@group(0) @binding(7) var tex_skybox: texture_cube<f32>;
+@group(0) @binding(4) var<storage, read> shadow_mask: array<u32>;
+@group(0) @binding(5) var tex_noise: texture_3d<f32>;
+@group(0) @binding(6) var sampler_noise: sampler;
+@group(0) @binding(7) var sampler_linear: sampler;
+@group(0) @binding(8) var tex_skybox: texture_cube<f32>;
 
-@group(0) @binding(8) var<storage, read> visible_voxels: array<VisibleVoxel>;
+@group(0) @binding(9) var<storage, read> visible_voxels: array<VisibleVoxel>;
 
 // current frame per-voxel shadow values
-@group(0) @binding(9) var<storage, read_write> voxel_lighting: array<array<u32, 3>>;
-@group(0) @binding(10) var<storage, read> acc_voxel_lighting: array<array<u32, 3>>;
+@group(0) @binding(10) var<storage, read_write> voxel_lighting: array<array<u32, 3>>;
+@group(0) @binding(11) var<storage, read> acc_voxel_lighting: array<array<u32, 3>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -49,6 +52,7 @@ struct Environment {
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    roughness_multiplier: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
@@ -140,14 +144,18 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
 
         var lighting = unpack_voxel_lighting(acc_voxel_lighting[hit.leaf_index]);
         if lighting.history_length == 0u {
-            // lighting.irradiance = textureSampleLevel(tex_skybox, sampler_linear, secondary.normal.xzy, 0.0).rgb;
-            // lighting.irradiance = min(lighting.irradiance, vec3(15.0)) * environment.indirect_sky_intensity;
-            lighting.shadow = 0.0;
+            //     // lighting.irradiance = textureSampleLevel(tex_skybox, sampler_linear, secondary.normal.xzy, 0.0).rgb;
+            //     // lighting.irradiance = min(lighting.irradiance, vec3(15.0)) * environment.indirect_sky_intensity;
+            // lighting.shadow = 0.0;
+            lighting.shadow = select(1.0, 0.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
         }
+        let shadow = 1.0 - lighting.shadow;
+        // let shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
 
         let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
 
-        let direct = environment.sun_color * environment.sun_intensity * ndl * (1.0 - lighting.shadow);
+        let direct = environment.sun_color * environment.sun_intensity * ndl * shadow;
+        // let indirect = select(vec3(0.0), lighting.irradiance, lighting.history_length > 1u);
         let indirect = lighting.irradiance;
 
         var emissive = vec3(0.0);

@@ -16,9 +16,9 @@ pub struct EnvironmentDataBuffer {
     pub shadow_filter_radius: f32,
     pub max_ambient_distance: u32,
     pub voxel_normal_factor: f32,
+    pub roughness_multiplier: f32,
     pub indirect_sky_intensity: f32,
     pub debug_view: u32,
-    pub _pad_1: f32,
 }
 
 #[repr(C)]

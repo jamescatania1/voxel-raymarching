@@ -3,11 +3,11 @@ mod camera;
 mod engine;
 mod input;
 mod noise;
+mod probes;
 mod quad;
 mod renderer;
 mod timing;
 mod transform;
-// mod utils;
 
 pub use self::engine::{Engine, EngineCtx};
 pub use self::input::Input;

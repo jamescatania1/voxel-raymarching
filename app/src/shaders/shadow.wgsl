@@ -1,5 +1,7 @@
 struct VoxelSceneMetadata {
+    size: vec3<u32>,
     bounding_size: u32,
+    probe_size: vec3<u32>,
     index_levels: u32,
     index_chunk_count: u32,
 }
@@ -41,6 +43,7 @@ struct Environment {
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    roughness_multiplier: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
@@ -121,9 +124,6 @@ fn trace_shadow(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
     let light_bitangent = normalize(cross(light_tangent, light_dir));
 
-    // let disk_point = (noise.xy * 2.0 - 1.0) * environment.shadow_spread;
-    // let dir = normalize(light_dir + disk_point.x * light_tangent + disk_point.y * light_bitangent);
-
     let u = f32(reverseBits(frame.frame_id)) * 2.3283064365386963e-10;
     let v = fract(f32(frame.frame_id) * 0.61803398875);
     var sample = fract(vec2(u, v) + noise);
@@ -133,8 +133,6 @@ fn trace_shadow(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
     let t = 2.0 * 3.14159265359 * sample.y;
     var dir = vec3<f32>(r * cos(t), r * sin(t), sqrt(max(0.0, 1.0 - sample.x)));
     dir = align_direction(dir, light_dir);
-
-    // var dir = rand_hemisphere_direction(noise.xy, environment.shadow_spread);
 
     var ray: Ray;
     ray.origin = ls_pos + dir * environment.shadow_bias;

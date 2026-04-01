@@ -6,7 +6,9 @@
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
 
 struct VoxelSceneMetadata {
+    size: vec3<u32>,
     bounding_size: u32,
+    probe_size: vec3<u32>,
     index_levels: u32,
     index_chunk_count: u32,
 }
@@ -51,6 +53,7 @@ struct Environment {
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    roughness_multiplier: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }

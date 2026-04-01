@@ -33,6 +33,7 @@ impl App {
 
         let mut features = wgpu::Features::default();
         features |= wgpu::Features::FLOAT32_FILTERABLE;
+        features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             features |= wgpu::Features::TIMESTAMP_QUERY;
         }
