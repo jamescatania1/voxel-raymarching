@@ -2,6 +2,7 @@ struct VoxelSceneMetadata {
     size: vec3<u32>,
     bounding_size: u32,
     probe_size: vec3<u32>,
+    probe_scale: f32,
     index_levels: u32,
     index_chunk_count: u32,
 }

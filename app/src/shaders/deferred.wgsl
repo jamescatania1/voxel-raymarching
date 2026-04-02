@@ -30,12 +30,14 @@ struct VoxelSceneMetadata {
     size: vec3<u32>,
     bounding_size: u32,
     probe_size: vec3<u32>,
+    probe_scale: f32,
     index_levels: u32,
     index_chunk_count: u32,
 }
 @group(2) @binding(8) var<uniform> scene: VoxelSceneMetadata;
 @group(2) @binding(9) var tex_probe_irradiance: texture_2d<f32>;
 @group(2) @binding(10) var tex_probe_depth: texture_2d<f32>;
+@group(2) @binding(11) var<storage, read> probes: array<vec3<f32>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -402,14 +404,13 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
 /// ------------------------------------------------------
 /// --------------- irradiance probe utils ---------------
 
-const PROBE_SCALE: f32 = 32.0;
 const PROBE_DEPTH_SCALE: f32 = 1.0 / 20.0;
 
 fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let grid_base = vec3<u32>(pos / PROBE_SCALE);
+    let grid_base = vec3<u32>(pos / scene.probe_scale);
     let base_pos = get_probe_pos(grid_base);
 
-    let alpha = saturate((pos - base_pos) / PROBE_SCALE);
+    let alpha = saturate((pos - base_pos) / scene.probe_scale);
 
     var irradiance = vec3(0.0);
     var weight = 0.0;
@@ -419,7 +420,8 @@ fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
         let grid_pos = grid_base + offset;
 
         let probe_id = get_probe_id(grid_pos);
-        let probe_pos = get_probe_pos(grid_pos);
+        // let probe_pos = get_probe_pos(grid_pos);
+        let probe_pos = probes[probe_id];
 
         var dir = probe_pos - (pos + environment.shadow_bias * normal);
         let probe_distance = length(dir) * PROBE_DEPTH_SCALE;
@@ -427,6 +429,12 @@ fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 
         let sample = sample_probe(probe_id, dir, normal);
         var w = 1.0;
+
+        // most of this math is from Majercik et. al's original impl
+        // their code is pretty simple, worth a look
+        // https://www.jcgt.org/published/0008/02/01/paper-lowres.pdf
+        let dir_unbiased = normalize(probe_pos - pos);
+        w *= pow(max(1e-4, (dot(dir_unbiased, normal) + 1.0) * 0.5), 2.0) + 0.2;
 
         let diff = max(probe_distance - sample.depth_mean, 0.0);
         var chebyshev_weight = sample.depth_variance / (sample.depth_variance + diff * diff);
@@ -476,7 +484,7 @@ fn sample_probe(probe_id: u32, dir: vec3<f32>, normal: vec3<f32>) -> ProbeSample
     var res: ProbeSample;
     res.irradiance = irradiance;
     res.depth_mean = moments.x;
-    res.depth_variance = abs(moments.x * moments.x - moments.y);
+    res.depth_variance = max(0.0, moments.y - moments.x * moments.x);
     return res;
 }
 
@@ -488,7 +496,7 @@ fn get_probe_id(grid_pos: vec3<u32>) -> u32 {
 // get the actual position of the probe from grid coordinates
 // pretty simple since it's all uniform atm
 fn get_probe_pos(grid_pos: vec3<u32>) -> vec3<f32> {
-    return (vec3<f32>(grid_pos) + 0.5) * PROBE_SCALE;
+    return (vec3<f32>(grid_pos) + 0.5) * scene.probe_scale;
 }
 
 // atlas always has width 2048

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use utils::{
     layout::{DeviceUtils, sampler, storage_buffer, storage_texture, texture, uniform_buffer},
     pipeline::PipelineUtils,
+    tree::Tree,
 };
 use wgpu::util::DeviceExt;
 
@@ -208,7 +209,11 @@ impl VoxelModel {
         Ok(data)
     }
 
-    pub fn deserialize(device: &wgpu::Device, _queue: &wgpu::Queue, data: &[u8]) -> Result<Self> {
+    pub fn deserialize(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        data: &[u8],
+    ) -> Result<(Self, Tree)> {
         if data.len() < 4 {
             bail!("Invalid model")
         }
@@ -243,15 +248,23 @@ impl VoxelModel {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
-        Ok(Self {
-            meta: header.meta,
-            data: VoxelBufferData {
-                buffer_palette,
-                buffer_index_chunks,
-                buffer_leaf_chunks,
-                buffer_index_leaf_positions,
+        let tree = Tree::new(
+            header.meta.bounding_size,
+            &buf[header.file.buffer_index_chunks.start..header.file.buffer_index_chunks.end],
+        );
+
+        Ok((
+            Self {
+                meta: header.meta,
+                data: VoxelBufferData {
+                    buffer_palette,
+                    buffer_index_chunks,
+                    buffer_leaf_chunks,
+                    buffer_index_leaf_positions,
+                },
             },
-        })
+            tree,
+        ))
     }
 }
 

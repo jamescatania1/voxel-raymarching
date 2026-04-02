@@ -58,7 +58,7 @@ impl Default for Config {
             roughness_multiplier: 1.0,
             indirect_sky_intensity: 2.2,
             ambient_ray_max_distance: 500,
-            irradiance_probe_scale: 32,
+            irradiance_probe_scale: 64,
             view: Default::default(),
             // view: DebugView::Shadow,
             fxaa: false,

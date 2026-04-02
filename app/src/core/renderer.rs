@@ -13,6 +13,7 @@ use crate::{
         },
         engine::Engine,
         noise,
+        probes::ProbeGrid,
         quad::Quad,
         timing::{RenderTimer, TimedEncoder},
     },
@@ -188,7 +189,7 @@ struct Buffers {
     voxel_shadow_mask: wgpu::Buffer,
     visible_voxels: wgpu::Buffer,
     visible_indirect_args: wgpu::Buffer,
-    chunk_lighting: wgpu::Buffer,
+    probes: wgpu::Buffer,
     cur_voxel_lighting: wgpu::Buffer,
     acc_voxel_lighting: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
@@ -226,6 +227,7 @@ impl Renderer {
                     texture().float().dimension_2d(),
                     texture().float().dimension_2d(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_buffer().read_only(),
                 ),
             ),
             probe_update_static: device.layout(
@@ -240,7 +242,11 @@ impl Renderer {
             probe_visualize_swap: device.layout(
                 "probe_visualize_static",
                 ShaderStages::VERTEX_FRAGMENT,
-                (uniform_buffer(), texture().float().dimension_2d()),
+                (
+                    uniform_buffer(),
+                    texture().float().dimension_2d(),
+                    storage_buffer().read_only(),
+                ),
             ),
             raymarch_gbuffer: device.layout(
                 "raymarch_gbuffer",
@@ -415,6 +421,7 @@ impl Renderer {
                     uniform_buffer(),
                     texture().float().dimension_2d(),
                     texture().float().dimension_2d(),
+                    storage_buffer().read_only(),
                 ),
             ),
             taa_input: device.layout(
@@ -611,14 +618,16 @@ impl Renderer {
         };
 
         // see build script
-        let scene = config.init_scene.load(device, queue).unwrap();
+        let (scene, tree) = config.init_scene.load(device, queue).unwrap();
         let skybox = config.init_skybox.load(device, queue).unwrap();
 
         let probe_size = scene
             .meta
             .size
-            .map(|x| x.div_ceil(config.irradiance_probe_scale));
+            .map(|x: u32| x.div_ceil(config.irradiance_probe_scale));
         let probe_count = probe_size.element_product();
+
+        let probes = ProbeGrid::new(scene.meta.size, config.irradiance_probe_scale, &tree);
 
         let textures = Textures {
             probe_irradiance: device.create_texture(&wgpu::TextureDescriptor {
@@ -716,9 +725,10 @@ impl Renderer {
                     size: glam::UVec3,
                     bounding_size: u32,
                     probe_size: glam::UVec3,
+                    probe_scale: f32,
                     index_levels: u32,
                     index_chunk_count: u32,
-                    _pad: [u32; 3],
+                    _pad: [u32; 2],
                 }
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("voxel_scene_metadata"),
@@ -726,9 +736,10 @@ impl Renderer {
                         size: scene.meta.size,
                         bounding_size: scene.meta.bounding_size,
                         probe_size,
+                        probe_scale: config.irradiance_probe_scale as f32,
                         index_levels: scene.meta.index_levels,
                         index_chunk_count: scene.meta.allocated_index_chunks,
-                        _pad: [0; 3],
+                        _pad: [0; 2],
                     }]),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
@@ -768,11 +779,10 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
                 mapped_at_creation: false,
             }),
-            chunk_lighting: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chunk_lighting"),
-                size: scene.meta.allocated_index_chunks as u64 * 4 * 4,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+            probes: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("probes"),
+                contents: bytemuck::cast_slice(&probes.probes),
+                usage: wgpu::BufferUsages::STORAGE,
             }),
             cur_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel_lighting"),
@@ -895,6 +905,10 @@ impl Renderer {
                         resource: wgpu::BindingResource::TextureView(
                             &textures.probe_ray_results.create_view(&Default::default()),
                         ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: buffers.probes.as_entire_binding(),
                     },
                 ],
             }),
@@ -1247,6 +1261,10 @@ impl Renderer {
                         resource: wgpu::BindingResource::TextureView(
                             &textures.probe_depth.create_view(&Default::default()),
                         ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: buffers.probes.as_entire_binding(),
                     },
                 ],
             }),
@@ -1844,6 +1862,12 @@ impl Renderer {
                     SwapchainBindGroupEntry {
                         binding: 1,
                         resource: view_gbuffer_depth.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 2,
+                        resource: SwapchainBindingResource::Single(
+                            self.buffers.probes.as_entire_binding(),
+                        ),
                     },
                 ],
             },

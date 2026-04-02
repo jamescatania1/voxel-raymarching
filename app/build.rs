@@ -100,6 +100,7 @@ fn generate_model_defs(sources: &[(VoxelMetadata, String)]) -> proc_macro2::Toke
         mod models {
             use wgpu::util::DeviceExt;
             use generate::VoxelModel;
+            use utils::tree::Tree;
             use std::io::Read;
 
             /// Atlas of all the available models in the runtime.
@@ -124,7 +125,7 @@ fn generate_model_defs(sources: &[(VoxelMetadata, String)]) -> proc_macro2::Toke
             }
 
             impl ModelEntry {
-                pub fn load(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> anyhow::Result<VoxelModel> {
+                pub fn load(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> anyhow::Result<(VoxelModel, Tree)> {
                     let timer = std::time::Instant::now();
 
                     let file = std::fs::File::open(&self.path)?;

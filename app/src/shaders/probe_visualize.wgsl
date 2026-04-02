@@ -2,11 +2,13 @@ struct VoxelSceneMetadata {
     size: vec3<u32>,
     bounding_size: u32,
     probe_size: vec3<u32>,
+    probe_scale: f32,
     index_levels: u32,
     index_chunk_count: u32,
 }
 @group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
 @group(0) @binding(1) var tex_depth: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read> probes: array<vec3<f32>>;
 
 struct PostFxSettings {
     fxaa_enabled: u32,
@@ -60,7 +62,6 @@ struct VertexOutput {
     @location(1) depth: f32,
 }
 
-const PROBE_SCALE: f32 = 32.0;
 const DOT_SIZE: f32 = 6.0;
 
 @vertex
@@ -74,20 +75,20 @@ fn vs_main(
         vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0),
     );
 
-    let probe_grid = vec3<u32>(
-        instance_id % scene.probe_size.x,
-        (instance_id / scene.probe_size.x) % scene.probe_size.y,
-        instance_id / (scene.probe_size.x * scene.probe_size.y),
-    );
-    let probe_pos = (vec3<f32>(probe_grid) + 0.5) * PROBE_SCALE;
+    // let probe_grid = vec3<u32>(
+    //     instance_id % scene.probe_size.x,
+    //     (instance_id / scene.probe_size.x) % scene.probe_size.y,
+    //     instance_id / (scene.probe_size.x * scene.probe_size.y),
+    // );
+    // let probe_pos = (vec3<f32>(probe_grid) + 0.5) * scene.probe_scale;
+    let probe_pos = probes[instance_id];
 
     let world_pos = model.transform * vec4(probe_pos, 1.0);
     let clip = environment.camera.view_proj * world_pos;
 
     let pos = corners[vertex_id] * DOT_SIZE * texel_size / clamp(clip.w, 0.15, 0.5);
 
-    var color = vec3<f32>(probe_grid % 10) / 10.0;
-    color.r = 1.0;
+    var color = vec3<f32>(1.0, f32(instance_id % 10) / 10.0, f32(instance_id % 7) / 7.0);
 
     let cam_local = (model.inv_transform * vec4(environment.camera.ws_position, 1.0)).xyz;
 
