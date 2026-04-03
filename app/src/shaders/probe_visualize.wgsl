@@ -62,7 +62,7 @@ struct VertexOutput {
     @location(1) depth: f32,
 }
 
-const DOT_SIZE: f32 = 6.0;
+const DOT_SIZE: f32 = 10.0;
 
 @vertex
 fn vs_main(
@@ -75,12 +75,6 @@ fn vs_main(
         vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0),
     );
 
-    // let probe_grid = vec3<u32>(
-    //     instance_id % scene.probe_size.x,
-    //     (instance_id / scene.probe_size.x) % scene.probe_size.y,
-    //     instance_id / (scene.probe_size.x * scene.probe_size.y),
-    // );
-    // let probe_pos = (vec3<f32>(probe_grid) + 0.5) * scene.probe_scale;
     let probe_pos = probes[instance_id];
 
     let world_pos = model.transform * vec4(probe_pos, 1.0);
@@ -88,7 +82,8 @@ fn vs_main(
 
     let pos = corners[vertex_id] * DOT_SIZE * texel_size / clamp(clip.w, 0.15, 0.5);
 
-    var color = vec3<f32>(1.0, f32(instance_id % 10) / 10.0, f32(instance_id % 7) / 7.0);
+    // var color = vec3<f32>(1.0, f32(instance_id % 10) / 10.0, f32(instance_id % 7) / 7.0);
+    let color = vec3(1.0, 0.0, 0.0);
 
     let cam_local = (model.inv_transform * vec4(environment.camera.ws_position, 1.0)).xyz;
 
@@ -102,7 +97,7 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let depth = textureLoad(tex_depth, vec2<u32>(in.position.xy), 0).r;
-    if in.depth > depth + 4.5 {
+    if in.depth > depth + 0.5 {
         discard;
     }
     return vec4(in.color * 3.0, 1.0);

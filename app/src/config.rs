@@ -17,7 +17,7 @@ pub struct Config {
     pub skybox_rotation: f32,
     pub shadow_bias: f32,
     pub shadow_spread: f32,
-    pub filter_shadows: bool,
+    pub per_voxel_secondary: bool,
     pub shadow_filter_radius: f32,
     pub voxel_normal_factor: f32,
     pub roughness_multiplier: f32,
@@ -29,6 +29,7 @@ pub struct Config {
     pub taa: bool,
     pub exposure: f32,
     pub tonemapping: TonemappingAlgorithm,
+    pub display_probes: bool,
     pub max_fps: Option<u32>,
     pub print_debug_info: bool,
 }
@@ -52,7 +53,7 @@ impl Default for Config {
             skybox_rotation: 2.8,
             shadow_bias: 2.0,
             shadow_spread: 0.015,
-            filter_shadows: true,
+            per_voxel_secondary: false,
             shadow_filter_radius: 7.0,
             voxel_normal_factor: 0.5,
             roughness_multiplier: 1.0,
@@ -65,6 +66,7 @@ impl Default for Config {
             taa: true,
             exposure: 2.0,
             tonemapping: Default::default(),
+            display_probes: false,
             max_fps: None,
             print_debug_info: false,
         }

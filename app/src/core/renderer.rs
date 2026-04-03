@@ -313,6 +313,9 @@ impl Renderer {
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
                     storage_buffer().read_only(),
+                    texture().float().dimension_2d(),
+                    texture().float().dimension_2d(),
+                    storage_buffer().read_only(),
                 ),
             ),
             resolve: device.layout(
@@ -1097,6 +1100,22 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 11,
                         resource: buffers.acc_voxel_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures.probe_irradiance.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures.probe_depth.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 14,
+                        resource: buffers.probes.as_entire_binding(),
                     },
                 ],
             }),
@@ -1981,7 +2000,7 @@ impl Renderer {
                     camera,
                     prev_camera,
                     shadow_spread: config.shadow_spread,
-                    filter_shadows: config.filter_shadows as u32,
+                    per_voxel_secondary: config.per_voxel_secondary as u32,
                     shadow_filter_radius: config.shadow_filter_radius,
                     max_ambient_distance: config.ambient_ray_max_distance,
                     voxel_normal_factor: config.voxel_normal_factor,
@@ -2030,6 +2049,7 @@ impl Renderer {
         if self.shadow_update_requested {
             self.shadow_update_requested = false;
 
+            encoder.clear_buffer(&self.buffers.acc_voxel_lighting, 0, None);
             encoder.clear_buffer(&self.buffers.voxel_shadow_mask, 0, None);
             // let mut pass = encoder.begin_compute_pass_timed("Shadow Occlusion", &mut self.timing);
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -2209,7 +2229,7 @@ impl Renderer {
         }
 
         // probe visualize pass
-        {
+        if config.display_probes {
             let descriptor = wgpu::RenderPassDescriptor {
                 label: Some("probe_visualize"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

@@ -85,8 +85,6 @@ impl ProbeGrid {
             }
         }
 
-        dbg!(&probes);
-
         Self {
             size,
             scale,

@@ -64,8 +64,8 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-// const MAX_HISTORY_LENGTH: u32 = 512u;
-const MAX_HISTORY_LENGTH: u32 = 128u;
+const MAX_HISTORY_LENGTH: u32 = 700;
+// const MAX_HISTORY_LENGTH: u32 = 128u;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {

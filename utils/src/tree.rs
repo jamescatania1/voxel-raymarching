@@ -6,10 +6,12 @@ pub struct Tree {
 
 impl Tree {
     pub fn new(size: u32, data: &[u8]) -> Self {
-        Self {
-            size,
-            chunks: bytemuck::cast_slice(data).to_vec(),
-        }
+        let chunk_size = std::mem::size_of::<IndexChunk>();
+        assert!(data.len() % chunk_size == 0);
+        let count = data.len() / chunk_size;
+        let mut chunks = vec![IndexChunk::default(); count];
+        bytemuck::cast_slice_mut::<IndexChunk, u8>(&mut chunks).copy_from_slice(data);
+        Self { size, chunks }
     }
 }
 

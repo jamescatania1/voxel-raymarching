@@ -129,6 +129,7 @@ fn compute_main(in: ComputeIn) {
 
     let ls_normal = model.inv_normal_transform * voxel.ws_normal;
     let irradiance = sample_irradiance(ls_pos, ls_normal);
+    // let irradiance = sample_irradiance(ls_pos, voxel.ls_hit_normal);
 
     var surface: PbrInput;
     surface.uv = uv;
@@ -139,8 +140,8 @@ fn compute_main(in: ComputeIn) {
     surface.roughness = max(voxel.roughness, min_roughness);
     surface.shadow = 1.0 - lighting.shadow;
     // surface.shadow = select(1.0, 0.0, shadow_occluded);
-    // surface.irradiance = lighting.irradiance;
-    surface.irradiance = irradiance;
+    surface.irradiance = lighting.irradiance;
+    // surface.irradiance = irradiance;
     surface.specular = specular;
     var color = pbr(surface);
 
@@ -170,7 +171,8 @@ fn compute_main(in: ComputeIn) {
             color = surface.irradiance;
         }
         case 9u {
-            color = vec3(surface.specular);
+            // color = vec3(surface.specular);
+            color = lighting.irradiance;
         }
         case 10u {
             color = vec3(abs(velocity), 0.0);
@@ -179,7 +181,8 @@ fn compute_main(in: ComputeIn) {
             color = textureSampleLevel(tex_skybox, sampler_linear, sky_ray_dir, 0.0).rgb;
         }
         case 12u {
-            color = textureSampleLevel(tex_irradiance, sampler_linear, sky_ray_dir, 0.0).rgb;
+            // color = textureSampleLevel(tex_irradiance, sampler_linear, sky_ray_dir, 0.0).rgb;
+            color = vec3(select(1.0, 0.0, shadow_occluded));
         }
         case 13u {
             let t = cos(f32(frame.frame_id) / 300.0) * 0.5 + 0.5;
@@ -404,37 +407,54 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
 /// ------------------------------------------------------
 /// --------------- irradiance probe utils ---------------
 
-const PROBE_DEPTH_SCALE: f32 = 1.0 / 20.0;
+const PROBE_DEPTH_SCALE: f32 = 1.0 / 40.0;
 
 fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let grid_base = vec3<u32>(pos / scene.probe_scale);
-    let base_pos = get_probe_pos(grid_base);
+    // let grid_cur = vec3<u32>(pos / scene.probe_scale);
+    // let cur_probe_id = get_probe_id(grid_cur);
+    // let cur_pos = probes[cur_probe_id];
 
-    let alpha = saturate((pos - base_pos) / scene.probe_scale);
+    // alot of the improvements by Dominik Rohacek are used here
+    // https://cescg.org/wp-content/uploads/2022/04/Rohacek-Improving-Probes-in-Dynamic-Diffuse-Global-Illumination.pdf
+
+    let grid_base = vec3<i32>(floor(pos / scene.probe_scale - 0.5));
+    let grid_base_pos = (vec3<f32>(grid_base) + 0.5) * scene.probe_scale;
+
+    let alpha = saturate((pos - grid_base_pos) / scene.probe_scale);
 
     var irradiance = vec3(0.0);
     var weight = 0.0;
 
     for (var i = 0u; i < 8; i++) {
-        let offset = vec3(i, i >> 1, i >> 2) & vec3(1);
-        let grid_pos = grid_base + offset;
+        let grid_offset = vec3<i32>(vec3(i, i >> 1, i >> 2) & vec3(1));
+        let grid_pos = grid_base + grid_offset;
 
-        let probe_id = get_probe_id(grid_pos);
-        // let probe_pos = get_probe_pos(grid_pos);
-        let probe_pos = probes[probe_id];
+        let probe = get_probe(grid_pos);
+        if !probe.exists {
+            continue;
+        }
 
-        var dir = probe_pos - (pos + environment.shadow_bias * normal);
+        // let probe_offset = (probe.pos - grid_base_pos) / scene.probe_scale;
+        // let probe_shift = probe_offset - vec3<f32>(grid_offset);
+        // let scaled_offset = (alpha - probe_shift) / max(vec3(1e-4), 1.0 - probe_shift);
+        let trilinear = mix(1.0 - alpha, alpha, vec3<f32>(grid_offset));
+
+        // let offset = (probe.pos - grid_base_pos) / scene.probe_scale;
+        // let scaled_offset = (vec3<f32>(grid_offset) - offset) / (1.0 - offset);
+
+        var dir = probe.pos - (pos + 0.2 * normal);
         let probe_distance = length(dir) * PROBE_DEPTH_SCALE;
         dir = normalize(dir);
 
-        let sample = sample_probe(probe_id, dir, normal);
+        let sample = sample_probe(probe.id, dir, normal);
         var w = 1.0;
 
         // most of this math is from Majercik et. al's original impl
         // their code is pretty simple, worth a look
         // https://www.jcgt.org/published/0008/02/01/paper-lowres.pdf
-        let dir_unbiased = normalize(probe_pos - pos);
-        w *= pow(max(1e-4, (dot(dir_unbiased, normal) + 1.0) * 0.5), 2.0) + 0.2;
+        let dir_unbiased = normalize(probe.pos - pos);
+        // w *= max(dot(dir_unbiased, normal), 0.0);
+        w *= pow(max(1e-4, (dot(dir_unbiased, normal) + 1.0) * 0.5), 2.0) + 0.05;
 
         let diff = max(probe_distance - sample.depth_mean, 0.0);
         var chebyshev_weight = sample.depth_variance / (sample.depth_variance + diff * diff);
@@ -448,7 +468,6 @@ fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
             w *= (w * w) / (DAMPEN_THREHSOLD * DAMPEN_THREHSOLD);
         }
 
-        let trilinear = mix(1.0 - alpha, alpha, vec3<f32>(offset));
         w *= trilinear.x * trilinear.y * trilinear.z;
 
         irradiance += w * sample.irradiance;
@@ -488,15 +507,20 @@ fn sample_probe(probe_id: u32, dir: vec3<f32>, normal: vec3<f32>) -> ProbeSample
     return res;
 }
 
-// flat probe index from grid coordinates
-fn get_probe_id(grid_pos: vec3<u32>) -> u32 {
-    return grid_pos.x + grid_pos.y * scene.probe_size.x + grid_pos.z * scene.probe_size.x * scene.probe_size.y;
+struct Probe {
+    exists: bool,
+    id: u32,
+    pos: vec3<f32>,
 }
-
-// get the actual position of the probe from grid coordinates
-// pretty simple since it's all uniform atm
-fn get_probe_pos(grid_pos: vec3<u32>) -> vec3<f32> {
-    return (vec3<f32>(grid_pos) + 0.5) * scene.probe_scale;
+fn get_probe(grid_pos: vec3<i32>) -> Probe {
+    if any(grid_pos < vec3(0)) || any(grid_pos >= vec3<i32>(scene.probe_size)) {
+        let pos = (vec3<f32>(grid_pos) + 0.5) * scene.probe_scale;
+        return Probe(false, 0, pos);
+    }
+    let p = vec3<u32>(grid_pos);
+    let id = p.x + p.y * scene.probe_size.x + p.z * scene.probe_size.x * scene.probe_size.y;;
+    let pos = probes[id];
+    return Probe(true, id, pos);
 }
 
 // atlas always has width 2048

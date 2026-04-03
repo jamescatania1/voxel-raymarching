@@ -40,6 +40,10 @@ struct VoxelLighting {
 @group(0) @binding(10) var<storage, read_write> voxel_lighting: array<array<u32, 3>>;
 @group(0) @binding(11) var<storage, read> acc_voxel_lighting: array<array<u32, 3>>;
 
+@group(0) @binding(12) var tex_probe_irradiance: texture_2d<f32>;
+@group(0) @binding(13) var tex_probe_depth: texture_2d<f32>;
+@group(0) @binding(14) var<storage, read> probes: array<vec3<f32>>;
+
 struct Environment {
     sun_direction: vec3<f32>,
     sun_intensity: f32,
@@ -115,8 +119,8 @@ struct AmbientResult {
 fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> AmbientResult {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
-    let u = f32(reverseBits(frame.frame_id)) * 2.3283064365386963e-10;
-    let v = fract(f32(frame.frame_id) * 0.61803398875);
+    let u = f32(reverseBits(frame.frame_id % 128)) * 2.3283064365386963e-10;
+    let v = fract(f32(frame.frame_id % 128) * 0.61803398875);
     var sample = fract(vec2(u, v) + noise);
 
     let r = sqrt(sample.x);
@@ -150,21 +154,25 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
             // lighting.shadow = 0.0;
             lighting.shadow = select(1.0, 0.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
         }
-        let shadow = 1.0 - lighting.shadow;
-        // let shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
+        // let shadow = 1.0 - lighting.shadow;
+        let shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
 
         let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
 
         let direct = environment.sun_color * environment.sun_intensity * ndl * shadow;
-        // let indirect = select(vec3(0.0), lighting.irradiance, lighting.history_length > 1u);
-        let indirect = lighting.irradiance;
+        var indirect: vec3<f32>;
+        if environment.filter_shadows != 0u {
+            indirect = lighting.irradiance;
+        } else {
+            indirect = sample_irradiance(ls_pos, ls_normal);
+        }
 
         var emissive = vec3(0.0);
         if secondary.is_emissive {
             emissive = albedo * secondary.emissive_intensity * 5.0;
         }
 
-        let diffuse = (direct + lighting.irradiance) * albedo + emissive;
+        let diffuse = (direct + indirect) * albedo + emissive;
 
         // var ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
         // ao_weight *= ao_weight;
@@ -528,4 +536,158 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     res.shadow = f32(packed[2] >> 16u) / 65535.0;
     res.history_length = packed[2] & 0xFFFFu;
     return res;
+}
+
+/// ------------------------------------------------------
+/// --------------- irradiance probe utils ---------------
+
+const PROBE_DEPTH_SCALE: f32 = 1.0 / 40.0;
+
+fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    // let grid_cur = vec3<u32>(pos / scene.probe_scale);
+    // let cur_probe_id = get_probe_id(grid_cur);
+    // let cur_pos = probes[cur_probe_id];
+
+    // alot of the improvements by Dominik Rohacek are used here
+    // https://cescg.org/wp-content/uploads/2022/04/Rohacek-Improving-Probes-in-Dynamic-Diffuse-Global-Illumination.pdf
+
+    let grid_base = vec3<i32>(floor(pos / scene.probe_scale - 0.5));
+    let grid_base_pos = (vec3<f32>(grid_base) + 0.5) * scene.probe_scale;
+
+    let alpha = saturate((pos - grid_base_pos) / scene.probe_scale);
+
+    var irradiance = vec3(0.0);
+    var weight = 0.0;
+
+    for (var i = 0u; i < 8; i++) {
+        let grid_offset = vec3<i32>(vec3(i, i >> 1, i >> 2) & vec3(1));
+        let grid_pos = grid_base + grid_offset;
+
+        let probe = get_probe(grid_pos);
+        if !probe.exists {
+            continue;
+        }
+
+        // let probe_offset = (probe.pos - grid_base_pos) / scene.probe_scale;
+        // let probe_shift = probe_offset - vec3<f32>(grid_offset);
+        // let scaled_offset = (alpha - probe_shift) / max(vec3(1e-4), 1.0 - probe_shift);
+        let trilinear = mix(1.0 - alpha, alpha, vec3<f32>(grid_offset));
+
+        // let offset = (probe.pos - grid_base_pos) / scene.probe_scale;
+        // let scaled_offset = (vec3<f32>(grid_offset) - offset) / (1.0 - offset);
+
+        var dir = probe.pos - (pos + 0.2 * normal);
+        let probe_distance = length(dir) * PROBE_DEPTH_SCALE;
+        dir = normalize(dir);
+
+        let sample = sample_probe(probe.id, dir, normal);
+        var w = 1.0;
+
+        // most of this math is from Majercik et. al's original impl
+        // their code is pretty simple, worth a look
+        // https://www.jcgt.org/published/0008/02/01/paper-lowres.pdf
+        let dir_unbiased = normalize(probe.pos - pos);
+        // w *= max(dot(dir_unbiased, normal), 0.0);
+        w *= pow(max(1e-4, (dot(dir_unbiased, normal) + 1.0) * 0.5), 2.0) + 0.05;
+
+        let diff = max(probe_distance - sample.depth_mean, 0.0);
+        var chebyshev_weight = sample.depth_variance / (sample.depth_variance + diff * diff);
+        chebyshev_weight = max(pow(chebyshev_weight, 3.0), 0.0);
+        if probe_distance > sample.depth_mean {
+            w *= max(1e-6, chebyshev_weight);
+        }
+
+        const DAMPEN_THREHSOLD: f32 = 0.2;
+        if w < DAMPEN_THREHSOLD {
+            w *= (w * w) / (DAMPEN_THREHSOLD * DAMPEN_THREHSOLD);
+        }
+
+        w *= trilinear.x * trilinear.y * trilinear.z;
+
+        irradiance += w * sample.irradiance;
+        weight += w;
+    }
+
+    return irradiance / max(1e-6, weight);
+}
+
+struct ProbeSample {
+    irradiance: vec3<f32>,
+    depth_mean: f32,
+    depth_variance: f32,
+}
+fn sample_probe(probe_id: u32, dir: vec3<f32>, normal: vec3<f32>) -> ProbeSample {
+    let irradiance_texel_size = 1.0 / vec2<f32>(textureDimensions(tex_probe_irradiance).xy);
+    let depth_texel_size = 1.0 / vec2<f32>(textureDimensions(tex_probe_depth).xy);
+
+    let dir_uv = encode_octahedral(dir) * 0.5 + 0.5;
+    let normal_uv = encode_octahedral(normal) * 0.5 + 0.5;
+
+    let irradiance_base = vec2<f32>(probe_atlas_offset_irradiance(probe_id)) * irradiance_texel_size;
+    let irradiance_offset = (normal_uv * 6.0 + 1.0) * irradiance_texel_size;
+    let irradiance_uv = irradiance_base + irradiance_offset;
+
+    let depth_base = vec2<f32>(probe_atlas_offset_depth(probe_id)) * depth_texel_size;
+    let depth_offset = (dir_uv * 14.0 + 1.0) * depth_texel_size;
+    let depth_uv = depth_base + depth_offset;
+
+    let irradiance = textureSampleLevel(tex_probe_irradiance, sampler_linear, irradiance_uv, 0.0).rgb;
+    let moments = textureSampleLevel(tex_probe_depth, sampler_linear, depth_uv, 0.0).rg;
+
+    var res: ProbeSample;
+    res.irradiance = irradiance;
+    res.depth_mean = moments.x;
+    res.depth_variance = max(0.0, moments.y - moments.x * moments.x);
+    return res;
+}
+
+struct Probe {
+    exists: bool,
+    id: u32,
+    pos: vec3<f32>,
+}
+fn get_probe(grid_pos: vec3<i32>) -> Probe {
+    if any(grid_pos < vec3(0)) || any(grid_pos >= vec3<i32>(scene.probe_size)) {
+        let pos = (vec3<f32>(grid_pos) + 0.5) * scene.probe_scale;
+        return Probe(false, 0, pos);
+    }
+    let p = vec3<u32>(grid_pos);
+    let id = p.x + p.y * scene.probe_size.x + p.z * scene.probe_size.x * scene.probe_size.y;;
+    let pos = probes[id];
+    return Probe(true, id, pos);
+}
+
+// atlas always has width 2048
+// each row contains 256 tiles since each is 8x8 incl. padding
+fn probe_atlas_offset_irradiance(probe_id: u32) -> vec2<u32> {
+    return vec2(
+        (probe_id & 255) << 3,
+        (probe_id >> 8u) << 3,
+    );
+}
+
+// atlas always has width 2048
+// each row contains 128 tiles since each is 16x16 incl. padding
+fn probe_atlas_offset_depth(probe_id: u32) -> vec2<u32> {
+    return vec2(
+        (probe_id & 127) << 4,
+        (probe_id >> 7u) << 4,
+    );
+}
+
+fn encode_octahedral(direction: vec3<f32>) -> vec2<f32> {
+    let l1 = dot(abs(direction), vec3(1.0));
+    var uv = direction.xy * (1.0 / l1);
+    if direction.z < 0.0 {
+        uv = (1.0 - abs(uv.yx)) * select(vec2(-1.0), vec2(1.0), uv.xy >= vec2(0.0));
+    }
+    return uv;
+}
+
+fn decode_octahedral(uv: vec2<f32>) -> vec3<f32> {
+    var v = vec3(uv, 1.0 - abs(uv.x) - abs(uv.y));
+    if v.z < 0.0 {
+        v = vec3((1.0 - abs(v.yx)) * select(vec2(-1.0), vec2(1.0), uv.xy >= vec2(0.0)), v.z);
+    }
+    return normalize(v);
 }

@@ -134,7 +134,7 @@ fn compute_main(in: ComputeIn) {
         for (var i = 0u; i < 128; i++) {
             let ray = rays[i];
             let w = dot(dir, ray.direction);
-            if w > 0.0 {
+            if w > 0.0 && ray.depth >= 0.0 {
                 moments += vec2(
                     ray.depth * w,
                     ray.depth * ray.depth * w,
@@ -149,8 +149,14 @@ fn compute_main(in: ComputeIn) {
 
         let atlas_pos = probe_atlas_offset_depth(probe_id) + tile_pos + 1;
 
-        let prev_moments = textureLoad(tex_depth, atlas_pos).rg;
+        var prev_moments: vec2<f32>;
+        if frame.frame_id == 0 {
+            prev_moments = vec2(20.0, 400.0);
+        } else {
+            prev_moments = textureLoad(tex_depth, atlas_pos).rg;
+        }
         let res = mix(prev_moments, moments, ACC_ALPHA);
+
         textureStore(tex_depth, atlas_pos, vec4(res, 0.0, 1.0));
     }
 }

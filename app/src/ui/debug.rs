@@ -132,6 +132,10 @@ impl DebugWindow {
                 ui.checkbox(&mut config.print_debug_info, "");
                 ui.end_row();
 
+                ui.label("Display Probes");
+                ui.checkbox(&mut config.display_probes, "");
+                ui.end_row();
+
                 ui.label("View");
                 egui::ComboBox::from_label("")
                     .selected_text(self.view.0)
@@ -232,8 +236,8 @@ impl DebugWindow {
                 ui.add(egui::Slider::new(&mut config.shadow_spread, 0.0..=1.0).logarithmic(true));
                 ui.end_row();
 
-                ui.label("Filter Shadows");
-                ui.checkbox(&mut config.filter_shadows, "");
+                ui.label("Per Voxel Secondary GI Bounces");
+                ui.checkbox(&mut config.per_voxel_secondary, "");
                 ui.end_row();
 
                 ui.label("Shadow Filter Radius");

@@ -83,14 +83,12 @@ struct ComputeIn {
 }
 
 const RAY_COUNT: u32 = 128;
-const MAX_DISTANCE: f32 = 256.0;
-const PROBE_DEPTH_SCALE: f32 = 1.0 / 20.0;
+const PROBE_DEPTH_SCALE: f32 = 1.0 / 40.0;
 
 @compute @workgroup_size(128, 1, 1)
 fn compute_main(in: ComputeIn) {
     let dir = generate_sample_direction(f32(in.local_index), f32(RAY_COUNT));
 
-    // let probe_pos = get_probe_pos(in.workgroup_id);
     let probe_id = get_probe_id(in.workgroup_id);
     let probe_pos = probes[probe_id];
 
@@ -127,9 +125,11 @@ fn trace(pos: vec3<f32>, dir: vec3<f32>) -> Trace {
     if hit.hit {
         let hit_voxel = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
         let hit_albedo = palette_color(hit_voxel.palette_index);
-        let hit_shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
 
-        let ls_normal = align_per_voxel_normal(hit.hit_normal, hit_voxel.normal, hit_voxel.roughness);
+        let shadow_occluded = (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 0u;
+        let hit_shadow = select(1.0, 0.0, shadow_occluded);
+
+        let ls_normal = align_per_voxel_normal(hit.hit_normal, hit_voxel.normal, max(hit_voxel.roughness, 0.8));
         let ws_normal = normalize(model.normal_transform * ls_normal);
 
         let hit_irradiance = sample_irradiance(hit.pos, ls_normal);
@@ -142,9 +142,14 @@ fn trace(pos: vec3<f32>, dir: vec3<f32>) -> Trace {
         let direct = environment.sun_color * environment.sun_intensity * ndl * hit_shadow;
 
         let radiance = (direct + hit_irradiance) * hit_albedo + hit_emissive;
-        let depth = min(hit.depth, MAX_DISTANCE);
 
-        return Trace(radiance, depth);
+        // we omit the depth samples if the ray traveled farther than the main diagonal of the grid cell
+        var depth = hit.depth;
+        if hit.depth > scene.probe_scale * 1.0 * 1.41421356237 {
+            depth = -1; // don't accumulate
+        }
+
+        return Trace(radiance, hit.depth);
     } else {
         let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
         let rot_dir = vec3(
@@ -155,7 +160,7 @@ fn trace(pos: vec3<f32>, dir: vec3<f32>) -> Trace {
         var sky_color = textureSampleLevel(tex_skybox, sampler_linear, rot_dir.xzy, 0.0).rgb;
         sky_color = min(sky_color, vec3(10.0)) * environment.indirect_sky_intensity;
 
-        return Trace(sky_color, MAX_DISTANCE);
+        return Trace(sky_color, -1.0);
     }
 }
 
@@ -186,34 +191,50 @@ fn generate_sample_direction(i: f32, n: f32) -> vec3<f32> {
 }
 
 fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let grid_base = vec3<u32>(pos / scene.probe_scale);
-    let base_pos = get_probe_pos(grid_base);
+    // let grid_cur = vec3<u32>(pos / scene.probe_scale);
+    // let cur_probe_id = get_probe_id(grid_cur);
+    // let cur_pos = probes[cur_probe_id];
 
-    let alpha = saturate((pos - base_pos) / scene.probe_scale);
+    // alot of the improvements by Dominik Rohacek are used here
+    // https://cescg.org/wp-content/uploads/2022/04/Rohacek-Improving-Probes-in-Dynamic-Diffuse-Global-Illumination.pdf
+
+    let grid_base = vec3<i32>(floor(pos / scene.probe_scale - 0.5));
+    let grid_base_pos = (vec3<f32>(grid_base) + 0.5) * scene.probe_scale;
+
+    let alpha = saturate((pos - grid_base_pos) / scene.probe_scale);
 
     var irradiance = vec3(0.0);
     var weight = 0.0;
 
     for (var i = 0u; i < 8; i++) {
-        let offset = vec3(i, i >> 1, i >> 2) & vec3(1);
-        let grid_pos = grid_base + offset;
+        let grid_offset = vec3<i32>(vec3(i, i >> 1, i >> 2) & vec3(1));
+        let grid_pos = grid_base + grid_offset;
 
-        let probe_id = get_probe_id(grid_pos);
-        // let probe_pos = get_probe_pos(grid_pos);
-        let probe_pos = probes[probe_id];
+        let probe = get_probe(grid_pos);
+        if !probe.exists {
+            continue;
+        }
 
-        var dir = probe_pos - (pos + environment.shadow_bias * normal);
+        // let probe_offset = (probe.pos - grid_base_pos) / scene.probe_scale;
+        // let probe_shift = probe_offset - vec3<f32>(grid_offset);
+        // let scaled_offset = (alpha - probe_shift) / max(vec3(1e-4), 1.0 - probe_shift);
+        let trilinear = mix(1.0 - alpha, alpha, vec3<f32>(grid_offset));
+
+        // let offset = (probe.pos - grid_base_pos) / scene.probe_scale;
+        // let scaled_offset = (vec3<f32>(grid_offset) - offset) / (1.0 - offset);
+
+        var dir = probe.pos - (pos + 0.2 * normal);
         let probe_distance = length(dir) * PROBE_DEPTH_SCALE;
         dir = normalize(dir);
 
-        let sample = sample_probe(probe_id, dir, normal);
+        let sample = sample_probe(probe.id, dir, normal);
         var w = 1.0;
 
         // most of this math is from Majercik et. al's original impl
         // their code is pretty simple, worth a look
         // https://www.jcgt.org/published/0008/02/01/paper-lowres.pdf
-        let dir_unbiased = normalize(probe_pos - pos);
-        w *= pow(max(1e-4, (dot(dir_unbiased, normal) + 1.0) * 0.5), 2.0) + 0.2;
+        let dir_unbiased = normalize(probe.pos - pos);
+        w *= pow(max(1e-4, (dot(dir_unbiased, normal) + 1.0) * 0.5), 2.0) + 0.05;
 
         let diff = max(probe_distance - sample.depth_mean, 0.0);
         var chebyshev_weight = sample.depth_variance / (sample.depth_variance + diff * diff);
@@ -227,7 +248,6 @@ fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
             w *= (w * w) / (DAMPEN_THREHSOLD * DAMPEN_THREHSOLD);
         }
 
-        let trilinear = mix(1.0 - alpha, alpha, vec3<f32>(offset));
         w *= trilinear.x * trilinear.y * trilinear.z;
 
         irradiance += w * sample.irradiance;
@@ -265,6 +285,22 @@ fn sample_probe(probe_id: u32, dir: vec3<f32>, normal: vec3<f32>) -> ProbeSample
     res.depth_mean = moments.x;
     res.depth_variance = max(0.0, moments.y - moments.x * moments.x);
     return res;
+}
+
+struct Probe {
+    exists: bool,
+    id: u32,
+    pos: vec3<f32>,
+}
+fn get_probe(grid_pos: vec3<i32>) -> Probe {
+    if any(grid_pos < vec3(0)) || any(grid_pos >= vec3<i32>(scene.probe_size)) {
+        let pos = (vec3<f32>(grid_pos) + 0.5) * scene.probe_scale;
+        return Probe(false, 0, pos);
+    }
+    let p = vec3<u32>(grid_pos);
+    let id = p.x + p.y * scene.probe_size.x + p.z * scene.probe_size.x * scene.probe_size.y;;
+    let pos = probes[id];
+    return Probe(true, id, pos);
 }
 
 // flat probe index from grid coordinates
@@ -347,7 +383,7 @@ fn raymarch(ray: Ray) -> RaymarchResult {
     var stack: array<u32, 11>;
     var ci = 0u;
     var chunk = index_chunks[ci];
-    var skip_next_hit = false;
+    var skip_next_hit = true;
 
     var i = 0u;
     for (i = 0u; i < 256; i++) {
