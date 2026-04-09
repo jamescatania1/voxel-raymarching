@@ -9,7 +9,7 @@ use crate::{
     core::{
         buffers::{
             self, CameraDataBuffer, EnvironmentDataBuffer, FrameMetadataBuffer, ModelDataBuffer,
-            PostFxSettingsBuffer, VoxelMapInfoBuffer,
+            PostFxSettingsBuffer, VisibilityInfoBuffer,
         },
         engine::Engine,
         noise,
@@ -86,7 +86,8 @@ struct Pipelines {
     probe_update: wgpu::ComputePipeline,
     probe_border: wgpu::ComputePipeline,
     raymarch: wgpu::ComputePipeline,
-    visible_indirect_args: wgpu::ComputePipeline,
+    voxel_indirect_args: wgpu::ComputePipeline,
+    chunk_indirect_args: wgpu::ComputePipeline,
     shadow: wgpu::ComputePipeline,
     ambient: wgpu::ComputePipeline,
     resolve: wgpu::ComputePipeline,
@@ -136,7 +137,8 @@ struct BindGroups {
     raymarch_gbuffer: Option<wgpu::BindGroup>,
     raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
-    visible_indirect_args: wgpu::BindGroup,
+    voxel_indirect_args: wgpu::BindGroup,
+    chunk_indirect_args: wgpu::BindGroup,
     shadow_static: wgpu::BindGroup,
     ambient_static: wgpu::BindGroup,
     resolve: wgpu::BindGroup,
@@ -170,7 +172,7 @@ struct Textures {
     gbuffer_acc_specular: Option<SwapchainTexture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
-    noise_vector3_uniform: wgpu::Texture,
+    noise_coshemi: wgpu::Texture,
     tonemap_mcmapface_lut: wgpu::Texture,
 }
 
@@ -184,12 +186,17 @@ struct Buffers {
     voxel_palette: wgpu::Buffer,
     voxel_index_chunks: wgpu::Buffer,
     voxel_leaf_chunks: wgpu::Buffer,
-    voxel_map_info: wgpu::Buffer,
+    visibility_info: wgpu::Buffer,
     voxel_map: wgpu::Buffer,
     voxel_shadow_mask: wgpu::Buffer,
+    chunk_visibility_mask: wgpu::Buffer,
     visible_voxels: wgpu::Buffer,
-    visible_indirect_args: wgpu::Buffer,
+    visible_chunks: wgpu::Buffer,
+    voxel_indirect_args: wgpu::Buffer,
+    chunk_indirect_args: wgpu::Buffer,
     probes: wgpu::Buffer,
+    cur_chunk_lighting: wgpu::Buffer,
+    acc_chunk_lighting: wgpu::Buffer,
     cur_voxel_lighting: wgpu::Buffer,
     acc_voxel_lighting: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
@@ -295,6 +302,10 @@ impl Renderer {
                     sampler().non_filtering(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
+                    storage_buffer().read_write(),
+                    storage_buffer().read_write(),
+                    storage_buffer().read_write(),
+                    storage_buffer().read_write(),
                 ),
             ),
             ambient_static: device.layout(
@@ -313,6 +324,7 @@ impl Renderer {
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
                     storage_buffer().read_only(),
+                    storage_buffer().read_write(),
                     texture().float().dimension_2d(),
                     texture().float().dimension_2d(),
                     storage_buffer().read_only(),
@@ -498,8 +510,13 @@ impl Renderer {
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
                 ]),
-            visible_indirect_args: device
-                .compute_pipeline("visible_indirect_args", &shaders.visible_indirect_args)
+            voxel_indirect_args: device
+                .compute_pipeline("voxel_indirect_args", &shaders.visible_indirect_args)
+                .entry_point("compute_voxels")
+                .layout(&[&bg_layouts.visible_indirect_args]),
+            chunk_indirect_args: device
+                .compute_pipeline("chunk_indirect_args", &shaders.visible_indirect_args)
+                .entry_point("compute_chunks")
                 .layout(&[&bg_layouts.visible_indirect_args]),
             shadow: device
                 .compute_pipeline("shadow", &shaders.shadow)
@@ -689,10 +706,7 @@ impl Renderer {
             gbuffer_acc_specular: None,
             deferred_output: None,
             out_color: None,
-            noise_vector3_uniform: noise::noise_vector3_uniform_binomial3x3_exp_product(
-                device, queue,
-            )
-            .unwrap(),
+            noise_coshemi: noise::noise_stbn_coshemi(device, queue).unwrap(),
             tonemap_mcmapface_lut: load_tonemap_lut(device, queue).unwrap(),
         };
 
@@ -759,9 +773,9 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            voxel_map_info: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("voxel_map_info"),
-                size: std::mem::size_of::<VoxelMapInfoBuffer>() as u64,
+            visibility_info: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("visible_info"),
+                size: std::mem::size_of::<VisibilityInfoBuffer>() as u64,
                 usage: wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_DST
                     | wgpu::BufferUsages::COPY_SRC,
@@ -773,14 +787,32 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            chunk_visibility_mask: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chunk_visibility_mask"),
+                size: (scene.meta.allocated_index_chunks as u64).div_ceil(32) * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             visible_voxels: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("visible_voxels"),
                 size: voxel_queue_len * 16,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            visible_indirect_args: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("visible_indirect_args"),
+            visible_chunks: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("visible_chunks"),
+                size: (scene.meta.allocated_index_chunks as u64) * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            voxel_indirect_args: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel_indirect_args"),
+                size: 12,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            }),
+            chunk_indirect_args: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chunk_indirect_args"),
                 size: 12,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
                 mapped_at_creation: false,
@@ -789,6 +821,18 @@ impl Renderer {
                 label: Some("probes"),
                 contents: bytemuck::cast_slice(&probes.probes),
                 usage: wgpu::BufferUsages::STORAGE,
+            }),
+            cur_chunk_lighting: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cur_chunk_lighting"),
+                size: (scene.meta.allocated_index_chunks as u64) * 12,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            acc_chunk_lighting: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("acc_chunk_lighting"),
+                size: (scene.meta.allocated_index_chunks as u64) * 12,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
             }),
             cur_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel_lighting"),
@@ -967,9 +1011,7 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures
-                                .noise_vector3_uniform
-                                .create_view(&Default::default()),
+                            &textures.noise_coshemi.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -978,7 +1020,7 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
-                        resource: buffers.voxel_map_info.as_entire_binding(),
+                        resource: buffers.visibility_info.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 7,
@@ -991,17 +1033,31 @@ impl Renderer {
                 ],
             }),
             raymarch_swap: None,
-            visible_indirect_args: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("visible_indirect_args"),
+            voxel_indirect_args: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("voxel_indirect_args"),
                 layout: &bg_layouts.visible_indirect_args,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: buffers.voxel_map_info.as_entire_binding(),
+                        resource: buffers.visibility_info.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: buffers.visible_indirect_args.as_entire_binding(),
+                        resource: buffers.voxel_indirect_args.as_entire_binding(),
+                    },
+                ],
+            }),
+            chunk_indirect_args: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("chunk_indirect_args"),
+                layout: &bg_layouts.visible_indirect_args,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.visibility_info.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.chunk_indirect_args.as_entire_binding(),
                     },
                 ],
             }),
@@ -1020,9 +1076,7 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures
-                                .noise_vector3_uniform
-                                .create_view(&Default::default()),
+                            &textures.noise_coshemi.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -1036,6 +1090,22 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: buffers.cur_voxel_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.visibility_info.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: buffers.chunk_visibility_mask.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: buffers.visible_chunks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: buffers.cur_chunk_lighting.as_entire_binding(),
                     },
                 ],
             }),
@@ -1066,9 +1136,7 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures
-                                .noise_vector3_uniform
-                                .create_view(&Default::default()),
+                            &textures.noise_coshemi.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -1106,18 +1174,22 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 12,
+                        resource: buffers.cur_chunk_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
                         resource: wgpu::BindingResource::TextureView(
                             &textures.probe_irradiance.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 13,
+                        binding: 14,
                         resource: wgpu::BindingResource::TextureView(
                             &textures.probe_depth.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 14,
+                        binding: 15,
                         resource: buffers.probes.as_entire_binding(),
                     },
                 ],
@@ -1177,9 +1249,7 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(
-                            &textures
-                                .noise_vector3_uniform
-                                .create_view(&Default::default()),
+                            &textures.noise_coshemi.create_view(&Default::default()),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -1936,13 +2006,13 @@ impl Renderer {
 
         let buffer_results = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: self.buffers.voxel_map_info.size(),
+            size: self.buffers.visibility_info.size(),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(
-            &self.buffers.voxel_map_info,
+            &self.buffers.visibility_info,
             0,
             &buffer_results,
             0,
@@ -1953,7 +2023,7 @@ impl Renderer {
         buffer_results.map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = buffer_results.get_mapped_range();
-        let data: &[VoxelMapInfoBuffer] = bytemuck::cast_slice(&data);
+        let data: &[VisibilityInfoBuffer] = bytemuck::cast_slice(&data);
         let data = data[0];
 
         dbg!(&data);
@@ -2058,14 +2128,16 @@ impl Renderer {
 
         let mut encoder = device.create_command_encoder(&Default::default());
 
-        encoder.clear_buffer(&self.buffers.voxel_map_info, 0, None);
+        encoder.clear_buffer(&self.buffers.visibility_info, 0, None);
         encoder.clear_buffer(&self.buffers.voxel_map, 0, None);
+        encoder.clear_buffer(&self.buffers.chunk_visibility_mask, 0, None);
+        encoder.clear_buffer(&self.buffers.cur_chunk_lighting, 0, None);
 
         // shadow occlusion pass
         if self.shadow_update_requested {
             self.shadow_update_requested = false;
 
-            encoder.clear_buffer(&self.buffers.acc_voxel_lighting, 0, None);
+            // encoder.clear_buffer(&self.buffers.acc_voxel_lighting, 0, None);
             encoder.clear_buffer(&self.buffers.voxel_shadow_mask, 0, None);
             // let mut pass = encoder.begin_compute_pass_timed("Shadow Occlusion", &mut self.timing);
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -2141,13 +2213,12 @@ impl Renderer {
 
         // copy over indirect args for the per-voxel dispatches
         {
-            let mut pass =
-                encoder.begin_compute_pass_timed("Prepare Visibility Args", &mut self.timing);
+            let mut pass = encoder.begin_compute_pass(&Default::default());
 
-            pass.set_pipeline(&self.pipelines.visible_indirect_args);
-            pass.set_bind_group(0, &self.bind_groups.visible_indirect_args, &[]);
+            pass.set_pipeline(&self.pipelines.voxel_indirect_args);
+            pass.set_bind_group(0, &self.bind_groups.voxel_indirect_args, &[]);
 
-            pass.insert_debug_marker("visible indirect args");
+            pass.insert_debug_marker("voxel indirect args");
             pass.dispatch_workgroups(1, 1, 1);
         }
 
@@ -2160,7 +2231,18 @@ impl Renderer {
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("shadow");
-            pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
+            pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
+        }
+
+        // copy over indirect args for the per-chunk dispatches
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+
+            pass.set_pipeline(&self.pipelines.chunk_indirect_args);
+            pass.set_bind_group(0, &self.bind_groups.chunk_indirect_args, &[]);
+
+            pass.insert_debug_marker("chunk indirect args");
+            pass.dispatch_workgroups(1, 1, 1);
         }
 
         // ambient pass
@@ -2172,7 +2254,7 @@ impl Renderer {
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("ambient");
-            pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
+            pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
         }
 
         // resolve pass
@@ -2184,7 +2266,7 @@ impl Renderer {
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("resolve");
-            pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
+            pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
         }
 
         // specular pass

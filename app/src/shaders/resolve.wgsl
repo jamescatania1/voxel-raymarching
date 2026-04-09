@@ -32,7 +32,7 @@ struct ChunkLighting {
     irradiance_variance: atomic<u32>,
     weight: atomic<u32>,
 }
-@group(0) @binding(6) var<storage, read_write> chunk_lighting: array<ChunkLighting>;
+@group(0) @binding(6) var<storage, read_write> cur_chunk_lighting: array<ChunkLighting>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -144,26 +144,6 @@ fn compute_main(in: ComputeIn) {
         weight += w;
     }
 
-    for (var x = -1; x <= 1; x++) {
-        for (var y = -1; y <= 1; y++) {
-            for (var z = -1; z <= 1; z++) {
-                let abs_offset = abs(vec3<i32>(x, y, z));
-
-                var w: f32;
-                if all(abs_offset == vec3(0)) {
-                    continue;
-                }
-                if all(abs_offset == vec3(2)) {
-                    w = 0.0201;
-                }
-
-                if x == 0 && y == 0 && z == 0 {
-                    continue;
-                }
-                let n_pos = vec3<i32>(pos) + vec3<i32>(x, y, z);
-            }
-        }
-    }
     irradiance /= weight;
 
     let luma = dot(irradiance, vec3(0.2126, 0.7152, 0.0722));
@@ -199,6 +179,7 @@ fn compute_main(in: ComputeIn) {
     let alpha = 1.0 / f32(acc.history_length);
     acc.shadow = mix(acc.shadow, shadow, alpha);
     acc.irradiance = mix(acc.irradiance, irradiance, alpha);
+    // acc.irradiance = irradiance;
 
     // {
     //     let vox = map_get(visible.leaf_index);
@@ -408,13 +389,10 @@ fn lookup_leaf(pos: vec3<u32>) -> LookupResult {
     var scale_exp = scene.index_levels * 2u - 2u;
 
     while scale_exp >= 0u {
-        // Extract the 2-bit child coordinate at this level for each axis.
         let cx = (pos.x >> scale_exp) & 3u;
         let cy = (pos.y >> scale_exp) & 3u;
         let cz = (pos.z >> scale_exp) & 3u;
 
-        // Pack into the same child_offset format your chunk_offset uses.
-        // Adjust this line to match your bit layout — see note below.
         let child_offset = cx | (cz << 2u) | (cy << 4u);
 
         if !chunk_contains_child(chunk.mask, child_offset) {

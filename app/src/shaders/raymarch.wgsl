@@ -26,8 +26,9 @@ struct IndexChunk {
 @group(2) @binding(3) var<storage, read> leaf_chunks: array<u32>;
 @group(2) @binding(4) var tex_noise: texture_3d<f32>;
 @group(2) @binding(5) var sampler_noise: sampler;
-struct VoxelInfo {
-    visible_count: atomic<u32>,
+struct VisibilityInfo {
+    voxel_count: atomic<u32>,
+    chunk_count: atomic<u32>,
     failed_to_add: atomic<u32>,
 }
 struct VisibleVoxel {
@@ -37,7 +38,7 @@ struct VisibleVoxel {
 }
 
 /// allocator info for visible voxels
-@group(2) @binding(6) var<storage, read_write> voxel_info: VoxelInfo;
+@group(2) @binding(6) var<storage, read_write> visibility: VisibilityInfo;
 
 /// two words (key, value) per entry. keyed by the leaf index, and values are indices into the visible_voxels
 /// each value for the current fragment is also written to the red channel of voxel_id in the gbuffer
@@ -323,7 +324,7 @@ fn map_insert(leaf_index: u32) -> MapResult {
             if res.exchanged {
                 var res: MapResult;
                 res.inserted = true;
-                res.visible_index = atomicAdd(&voxel_info.visible_count, 1u);
+                res.visible_index = atomicAdd(&visibility.voxel_count, 1u);
 
                 atomicStore(&voxel_map[(index << 1u) + 1u], res.visible_index);
                 return res;
@@ -336,7 +337,7 @@ fn map_insert(leaf_index: u32) -> MapResult {
     }
 
     // for tracking
-    atomicAdd(&voxel_info.failed_to_add, 1u);
+    atomicAdd(&visibility.failed_to_add, 1u);
     return MapResult();
 }
 

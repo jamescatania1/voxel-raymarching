@@ -60,17 +60,19 @@ pub fn noise_uniform_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result
 }
 
 #[allow(unused)]
-pub fn noise_sphere_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
+pub fn noise_stbn_coshemi(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
+    // $(std::include_bytes!(concat!("../../assets/noise/sphere_uniform_gauss1_0_exp0101_separate05_", $n, ".png"))),*
     macro_rules! include_images {
         ($($n:expr),*) => {
             [
-                $(std::include_bytes!(concat!("../../assets/noise/sphere_uniform_gauss1_0_exp0101_separate05_", $n, ".png"))),*
+                $(std::include_bytes!(concat!("../../assets/noise/stbn_unitvec3_cosine_2Dx1D_128x128x64_", $n, ".png"))),*
             ]
         }
     }
-    static IMAGE_SRC: [&[u8]; 32] = include_images!(
+    static IMAGE_SRC: [&[u8]; 64] = include_images!(
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-        25, 26, 27, 28, 29, 30, 31
+        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+        48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
     );
     let images = IMAGE_SRC
         .iter()
@@ -85,7 +87,7 @@ pub fn noise_sphere_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<
         size: wgpu::Extent3d {
             width: images[0].width(),
             height: images[0].height(),
-            depth_or_array_layers: 32,
+            depth_or_array_layers: 64,
         },
         mip_level_count: 1,
         sample_count: 1,

@@ -25,6 +25,23 @@ struct VisibleVoxel {
 // current frame per-voxel shadow values
 @group(0) @binding(5) var<storage, read_write> voxel_lighting: array<array<u32, 3>>;
 
+struct VisibilityInfo {
+    voxel_count: atomic<u32>,
+    chunk_count: atomic<u32>,
+    failed_to_add: atomic<u32>,
+}
+struct ChunkLightingSample {
+    // for irradiance
+    m1: atomic<u32>,
+    m2: atomic<u32>,
+    // pad (2) | shadow sum (10) | shadow samples (10) | irradiance samples (10)
+    shadow_counts: atomic<u32>,
+}
+@group(0) @binding(6) var<storage, read_write> visibility: VisibilityInfo;
+@group(0) @binding(7) var<storage, read_write> chunk_visibility_mask: array<atomic<u32>>;
+@group(0) @binding(8) var<storage, read_write> visible_chunks: array<u32>;
+@group(0) @binding(9) var<storage, read_write> cur_chunk_lighting: array<ChunkLightingSample>;
+
 struct Environment {
     sun_direction: vec3<f32>,
     sun_intensity: f32,
@@ -82,10 +99,18 @@ fn compute_main(in: ComputeIn) {
     let voxel_pos = unpack_voxel_pos(visible.pos);
     let voxel_center = vec3<f32>(voxel_pos) + 0.5;
 
-    let noise = hash_noise(visible.leaf_index);
-
-    let result = trace_shadow(noise, voxel_center, in.local_index);
+    let result = trace_shadow(voxel_pos, voxel_center, in.local_index);
     voxel_lighting[in.id.x] = pack_visible_lighting(result);
+
+    let ci = get_containing_index_chunk_id(voxel_pos);
+    atomicAdd(&cur_chunk_lighting[ci].shadow_counts, (u32(result) << 20u) | (1u << 10u));
+
+    // add the chunk to the visible list if not there yet
+    // same as the voxels, but simpler since memory is cheap when you divide everything by 64
+    if (atomicOr(&chunk_visibility_mask[ci >> 5u], 1u << (ci & 31u)) & (1u << (ci & 31u))) == 0 {
+        let i = atomicAdd(&visibility.chunk_count, 1u);
+        visible_chunks[i] = ci;
+    }
 }
 
 fn pack_visible_lighting(shadow: bool) -> array<u32, 3> {
@@ -96,20 +121,42 @@ fn pack_visible_lighting(shadow: bool) -> array<u32, 3> {
     );
 }
 
-fn trace_shadow(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
+// gets the first parent 4x4x4 index chunk's id for the given voxel position
+// if this is slow we can store it explicitly in the future
+fn get_containing_index_chunk_id(voxel_pos: vec3<u32>) -> u32 {
+    var ci = 0u;
+    var chunk = index_chunks[ci];
+    var scale_exp = scene.index_levels * 2u - 2u;
+
+    while scale_exp > 0u {
+        let cx = (voxel_pos.x >> scale_exp) & 3u;
+        let cy = (voxel_pos.y >> scale_exp) & 3u;
+        let cz = (voxel_pos.z >> scale_exp) & 3u;
+
+        let child_offset = cx | (cz << 2u) | (cy << 4u);
+
+        if chunk_is_leaf(chunk.child_index) {
+            // return ci;
+            break;
+        }
+        let next = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
+
+        ci = next;
+        chunk = index_chunks[ci];
+        scale_exp -= 2u;
+    }
+
+    return ci;
+    // return 0; // won't happen
+}
+
+fn trace_shadow(voxel_pos: vec3<u32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
     let light_bitangent = normalize(cross(light_tangent, light_dir));
 
-    let u = f32(reverseBits(frame.frame_id)) * 2.3283064365386963e-10;
-    let v = fract(f32(frame.frame_id) * 0.61803398875);
-    var sample = fract(vec2(u, v) + noise);
-    sample.x *= environment.shadow_spread;
-
-    let r = sqrt(sample.x);
-    let t = 2.0 * 3.14159265359 * sample.y;
-    var dir = vec3<f32>(r * cos(t), r * sin(t), sqrt(max(0.0, 1.0 - sample.x)));
+    var dir = blue_noise(voxel_pos);
     dir = align_direction(dir, light_dir);
 
     var ray: Ray;
@@ -199,24 +246,22 @@ fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
     return false;
 }
 
-// noise from https://github.com/electronicarts/fastnoise/blob/main/FastNoiseDesign.md
-fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
-    const FRACT_PHI: f32 = 0.61803398875;
-    const FRACT_SQRT_2: f32 = 0.41421356237;
-    const OFFSET: vec2<f32> = vec2<f32>(FRACT_PHI, FRACT_SQRT_2);
+fn blue_noise(voxel_pos: vec3<u32>) -> vec3<f32> {
+    let x = (voxel_pos.x ^ (voxel_pos.z << 4)) & 127;
+    let y = (voxel_pos.y ^ (voxel_pos.z >> 4)) & 127;
+    let z = frame.frame_id & 63u;
+    let dir = textureLoad(tex_noise, vec3(x, y, z), 0).rgb * 2.0 - 1.0;
 
-    let frame_offset_seed = (frame.frame_id >> 5u) & 0xffu;
-    let frame_offset = vec2<u32>(OFFSET * 128.0 * f32(frame_offset_seed));
+    let s = 1.0 - environment.shadow_spread;
+    let u_1 = 1.0 - dir.z * dir.z;
+    let len = sqrt(max(1e-8, u_1));
 
-    let id = pos + frame_offset;
-    // let id = pos;
-    let sample_pos = vec3<u32>(
-        id.x & 0x7fu,
-        id.y & 0x7fu,
-        frame.frame_id & 0x1fu,
-    );
-    let noise = textureLoad(tex_noise, sample_pos, 0).rgb;
-    return noise;
+    let cos_t = 1.0 - u_1 * environment.shadow_spread;
+    let sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    let cos_phi = dir.x / len;
+    let sin_phi = dir.y / len;
+
+    return vec3(sin_t * cos_phi, sin_t * sin_phi, cos_t);
 }
 
 fn rand_hemisphere_direction(noise: vec2<f32>, spread: f32) -> vec3<f32> {

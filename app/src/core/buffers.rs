@@ -38,8 +38,9 @@ pub struct PostFxSettingsBuffer {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VoxelMapInfoBuffer {
-    pub visible_count: u32,
+pub struct VisibilityInfoBuffer {
+    pub visible_voxels: u32,
+    pub visible_chunks: u32,
     pub failed_to_insert_count: u32,
 }
 
