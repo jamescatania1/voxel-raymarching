@@ -187,10 +187,10 @@ fn trace_ambient(voxel_pos: vec3<u32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>) 
         var lighting = unpack_voxel_lighting(acc_voxel_lighting[hit.leaf_index]);
         if lighting.history_length < 8u {
             lighting.irradiance = sample_irradiance(hit.local_pos, hit.hit_normal);
-            lighting.shadow = select(1.0, 0.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
+            lighting.shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
         }
-        lighting.shadow = select(1.0, 0.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
-        let shadow = 1.0 - lighting.shadow;
+        lighting.shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
+        let shadow = lighting.shadow;
 
         let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
 

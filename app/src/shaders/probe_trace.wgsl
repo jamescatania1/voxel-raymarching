@@ -126,10 +126,11 @@ fn trace(pos: vec3<f32>, dir: vec3<f32>) -> Trace {
         let hit_voxel = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
         let hit_albedo = palette_color(hit_voxel.palette_index);
 
-        let shadow_occluded = (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 0u;
-        let hit_shadow = select(1.0, 0.0, shadow_occluded);
+        let shadow_occluded = (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u;
+        let hit_shadow = select(0.0, 1.0, shadow_occluded);
 
-        let ls_normal = align_per_voxel_normal(hit.hit_normal, hit_voxel.normal, max(hit_voxel.roughness, 0.8));
+        let ls_normal = hit.hit_normal;
+        // let ls_normal = align_per_voxel_normal(hit.hit_normal, hit_voxel.normal, max(hit_voxel.roughness, 0.8));
         let ws_normal = normalize(model.normal_transform * ls_normal);
 
         let hit_irradiance = sample_irradiance(hit.pos, ls_normal);

@@ -21,18 +21,26 @@ struct IndexChunk {
     child_index: u32,
     mask: array<u32, 2>,
 }
+struct ChunkLighting {
+    m1: f32,
+    m2: f32,
+    history_length: u32,
+}
+struct ChunkLightingSample {
+    // for irradiance
+    m1: u32,
+    m2: u32,
+    // pad (2) | shadow sum (10) | shadow samples (10) | irradiance samples (10)
+    shadow_counts: u32,
+}
 @group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
 @group(0) @binding(1) var<storage, read> index_chunks: array<IndexChunk>;
 @group(0) @binding(2) var<storage, read> voxel_map: array<u32>;
 @group(0) @binding(3) var<storage, read> visible_voxels: array<VisibleVoxel>;
 @group(0) @binding(4) var<storage, read> cur_voxel_lighting: array<array<u32, 3>>;
 @group(0) @binding(5) var<storage, read_write> acc_voxel_lighting: array<array<u32, 3>>;
-struct ChunkLighting {
-    irradiance_luma: atomic<u32>,
-    irradiance_variance: atomic<u32>,
-    weight: atomic<u32>,
-}
-@group(0) @binding(6) var<storage, read_write> cur_chunk_lighting: array<ChunkLighting>;
+@group(0) @binding(6) var<storage, read> cur_chunk_lighting: array<ChunkLightingSample>;
+@group(0) @binding(7) var<storage, read> acc_chunk_lighting: array<ChunkLighting>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -80,6 +88,7 @@ struct ComputeIn {
 }
 
 const MAX_HISTORY_LENGTH: u32 = 128;
+const SHADOW_VARIANCE_SENSITIVITY: f32 = 38.0;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
@@ -95,7 +104,7 @@ fn compute_main(in: ComputeIn) {
     var irradiance = cur.irradiance;
     var weight = 8.0;
 
-    let pos = unpack_voxel_pos(visible.pos);
+    let voxel_pos = unpack_voxel_pos(visible.pos);
 
     const NEIGHBORS: array<vec4<i32>, 26> = array<vec4<i32>, 26>(
         vec4<i32>(-1, -1, -1, 1), vec4<i32>(0, -1, -1, 2), vec4<i32>(1, -1, -1, 1),
@@ -110,9 +119,10 @@ fn compute_main(in: ComputeIn) {
     );
 
     for (var i = 0u; i < 26u; i++) {
+        break;
         let n = NEIGHBORS[i];
 
-        let n_pos = n.xyz + vec3<i32>(pos);
+        let n_pos = n.xyz + vec3<i32>(voxel_pos);
 
         if any(n_pos < vec3<i32>(0)) {
             continue;
@@ -150,6 +160,21 @@ fn compute_main(in: ComputeIn) {
 
     var acc = unpack_voxel_lighting(acc_voxel_lighting[visible.leaf_index]);
 
+    let ci = get_containing_index_chunk_id(voxel_pos);
+    let chunk = acc_chunk_lighting[ci];
+
+    let cur_chunk_packed = cur_chunk_lighting[ci];
+    let chunk_sample_count = (cur_chunk_packed.shadow_counts >> 10u) & 0x3FFu;
+
+    let shadow_floor = chunk.m1 * (1.0 - chunk.m1) / f32(chunk_sample_count);
+    var variance_shadow = max(0.0, chunk.m2 - chunk.m1 * chunk.m1);
+    // variance_shadow = max(0.0, variance_shadow - shadow_floor);
+
+    let shadow_confidence = saturate(variance_shadow * SHADOW_VARIANCE_SENSITIVITY);
+
+    let max_shadow_history = u32(mix(f32(MAX_HISTORY_LENGTH), 8.0, shadow_confidence));
+    acc.history_length = min(max_shadow_history, acc.history_length + 1);
+
     // let cur_luma = combined_luminance(cur);
     // let acc_luma = combined_luminance(acc);
 
@@ -174,10 +199,11 @@ fn compute_main(in: ComputeIn) {
 
     // acc.history_length = min(acc.history_length + 1u, max_history_len);
     // acc.variance = m2;
-    acc.history_length = min(MAX_HISTORY_LENGTH, acc.history_length + 1u);
+    // acc.history_length = min(MAX_HISTORY_LENGTH, acc.history_length + 1u);
 
     let alpha = 1.0 / f32(acc.history_length);
     acc.shadow = mix(acc.shadow, shadow, alpha);
+    // acc.shadow = shadow_confidence;
     acc.irradiance = mix(acc.irradiance, irradiance, alpha);
     // acc.irradiance = irradiance;
 
@@ -414,6 +440,35 @@ fn lookup_leaf(pos: vec3<u32>) -> LookupResult {
     }
 
     return LookupResult();
+}
+
+// gets the first parent 4x4x4 index chunk's id for the given voxel position
+// if this is slow we can store it explicitly in the future
+fn get_containing_index_chunk_id(voxel_pos: vec3<u32>) -> u32 {
+    var ci = 0u;
+    var chunk = index_chunks[ci];
+    var scale_exp = scene.index_levels * 2u - 2u;
+
+    while scale_exp > 0u {
+        let cx = (voxel_pos.x >> scale_exp) & 3u;
+        let cy = (voxel_pos.y >> scale_exp) & 3u;
+        let cz = (voxel_pos.z >> scale_exp) & 3u;
+
+        let child_offset = cx | (cz << 2u) | (cy << 4u);
+
+        if chunk_is_leaf(chunk.child_index) {
+            // return ci;
+            break;
+        }
+        let next = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
+
+        ci = next;
+        chunk = index_chunks[ci];
+        scale_exp -= 2u;
+    }
+
+    return ci;
+    // return 0; // won't happen
 }
 
 fn mirrored_pos(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {

@@ -163,7 +163,7 @@ fn trace_shadow(voxel_pos: vec3<u32>, ls_pos: vec3<f32>, local_index: u32) -> bo
     ray.origin = ls_pos + dir * environment.shadow_bias;
     ray.direction = dir;
 
-    return raymarch_shadow(ray, local_index);
+    return !raymarch_shadow(ray, local_index);
 }
 
 struct Ray {

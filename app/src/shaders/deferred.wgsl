@@ -138,10 +138,10 @@ fn compute_main(in: ComputeIn) {
     surface.albedo = albedo * select(1.0, voxel.emissive_intensity * 5.0, voxel.is_emissive);
     surface.metallic = voxel.metallic;
     surface.roughness = max(voxel.roughness, min_roughness);
-    surface.shadow = 1.0 - lighting.shadow;
-    // surface.shadow = select(1.0, 0.0, shadow_occluded);
-    surface.irradiance = lighting.irradiance;
-    // surface.irradiance = irradiance;
+    surface.shadow = lighting.shadow;
+    // surface.shadow = select(0.0, 1.0, shadow_occluded);
+    // surface.irradiance = lighting.irradiance;
+    surface.irradiance = irradiance;
     surface.specular = specular;
     var color = pbr(surface);
 
@@ -183,7 +183,7 @@ fn compute_main(in: ComputeIn) {
         }
         case 12u {
             // color = textureSampleLevel(tex_irradiance, sampler_linear, sky_ray_dir, 0.0).rgb;
-            color = vec3(select(1.0, 0.0, shadow_occluded));
+            color = vec3(select(0.0, 1.0, shadow_occluded));
         }
         case 13u {
             let t = cos(f32(frame.frame_id) / 300.0) * 0.5 + 0.5;

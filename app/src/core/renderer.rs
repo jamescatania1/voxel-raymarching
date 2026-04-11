@@ -38,12 +38,11 @@ define_shaders! {
     visible_indirect_args "../shaders/visible_indirect_args.wgsl",
     shadow "../shaders/shadow.wgsl",
     ambient "../shaders/ambient.wgsl",
+    resolve "../shaders/resolve.wgsl",
+    chunk_resolve "../shaders/chunk_resolve.wgsl",
     specular "../shaders/specular.wgsl",
-    lighting_resolve "../shaders/lighting_resolve.wgsl",
     specular_spatial "../shaders/specular_spatial.wgsl",
     specular_resolve "../shaders/specular_resolve.wgsl",
-    resolve "../shaders/resolve.wgsl",
-    atrous "../shaders/atrous.wgsl",
     deferred "../shaders/deferred.wgsl",
     taa "../shaders/taa.wgsl",
     fx "../shaders/fx.wgsl",
@@ -91,6 +90,7 @@ struct Pipelines {
     shadow: wgpu::ComputePipeline,
     ambient: wgpu::ComputePipeline,
     resolve: wgpu::ComputePipeline,
+    chunk_resolve: wgpu::ComputePipeline,
     specular: wgpu::ComputePipeline,
     specular_spatial: wgpu::ComputePipeline,
     specular_resolve: wgpu::ComputePipeline,
@@ -113,6 +113,7 @@ struct BindGroupLayouts {
     shadow_static: wgpu::BindGroupLayout,
     ambient_static: wgpu::BindGroupLayout,
     resolve: wgpu::BindGroupLayout,
+    chunk_resolve_static: wgpu::BindGroupLayout,
     specular_gbuffer: wgpu::BindGroupLayout,
     specular_swap: wgpu::BindGroupLayout,
     specular_static: wgpu::BindGroupLayout,
@@ -142,6 +143,7 @@ struct BindGroups {
     shadow_static: wgpu::BindGroup,
     ambient_static: wgpu::BindGroup,
     resolve: wgpu::BindGroup,
+    chunk_resolve_static: wgpu::BindGroup,
     specular_gbuffer: Option<wgpu::BindGroup>,
     specular_swap: Option<SwapchainBindGroup>,
     specular_static: wgpu::BindGroup,
@@ -330,6 +332,15 @@ impl Renderer {
                     storage_buffer().read_only(),
                 ),
             ),
+            chunk_resolve_static: device.layout(
+                "chunk_resolve_static",
+                ShaderStages::COMPUTE,
+                (
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_write(),
+                ),
+            ),
             resolve: device.layout(
                 "resolve_swap",
                 ShaderStages::COMPUTE,
@@ -340,6 +351,8 @@ impl Renderer {
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
                 ),
             ),
             specular_gbuffer: device.layout(
@@ -524,6 +537,12 @@ impl Renderer {
             ambient: device
                 .compute_pipeline("ambient", &shaders.ambient)
                 .layout(&[&bg_layouts.ambient_static, &bg_layouts.per_frame_shared]),
+            chunk_resolve: device
+                .compute_pipeline("chunk_resolve", &shaders.chunk_resolve)
+                .layout(&[
+                    &bg_layouts.chunk_resolve_static,
+                    &bg_layouts.per_frame_shared,
+                ]),
             resolve: device
                 .compute_pipeline("resolve", &shaders.resolve)
                 .layout(&[&bg_layouts.resolve, &bg_layouts.per_frame_shared]),
@@ -1194,6 +1213,24 @@ impl Renderer {
                     },
                 ],
             }),
+            chunk_resolve_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("chunk_resolve_static"),
+                layout: &bg_layouts.chunk_resolve_static,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.visible_chunks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.cur_chunk_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: buffers.acc_chunk_lighting.as_entire_binding(),
+                    },
+                ],
+            }),
             resolve: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("resolve_swap"),
                 layout: &bg_layouts.resolve,
@@ -1221,6 +1258,14 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: buffers.acc_voxel_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: buffers.cur_chunk_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: buffers.acc_chunk_lighting.as_entire_binding(),
                     },
                 ],
             }),
@@ -2255,6 +2300,18 @@ impl Renderer {
 
             pass.insert_debug_marker("ambient");
             pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
+        }
+
+        // chunk resolve pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Chunk Resolve", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.chunk_resolve);
+            pass.set_bind_group(0, &self.bind_groups.chunk_resolve_static, &[]);
+            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+
+            pass.insert_debug_marker("chunk resolve");
+            pass.dispatch_workgroups_indirect(&self.buffers.chunk_indirect_args, 0);
         }
 
         // resolve pass

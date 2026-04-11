@@ -50,7 +50,7 @@ struct ComputeIn {
     @builtin(local_invocation_index) local_index: u32,
 }
 
-const ACC_ALPHA: f32 = 0.03;
+const ACC_ALPHA: f32 = 0.003;
 
 struct ProbeRay {
     radiance: vec3<f32>,
