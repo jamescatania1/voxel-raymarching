@@ -125,7 +125,7 @@ fn compute_main(in: ComputeIn) {
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
 
-    let shadow_occluded = (voxel_shadow_mask[voxel_id >> 5u] & (1u << (voxel_id & 31u))) == 0u;
+    let shadow_occluded = (voxel_shadow_mask[voxel_id >> 5u] & (1u << (voxel_id & 31u))) != 0u;
 
     let ls_normal = model.inv_normal_transform * voxel.ws_normal;
     let irradiance = sample_irradiance(ls_pos, ls_normal);
@@ -138,8 +138,8 @@ fn compute_main(in: ComputeIn) {
     surface.albedo = albedo * select(1.0, voxel.emissive_intensity * 5.0, voxel.is_emissive);
     surface.metallic = voxel.metallic;
     surface.roughness = max(voxel.roughness, min_roughness);
-    surface.shadow = lighting.shadow;
-    // surface.shadow = select(0.0, 1.0, shadow_occluded);
+    // surface.shadow = lighting.shadow;
+    surface.shadow = select(0.0, 1.0, shadow_occluded);
     // surface.irradiance = lighting.irradiance;
     surface.irradiance = irradiance;
     surface.specular = specular;
