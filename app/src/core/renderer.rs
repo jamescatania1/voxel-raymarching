@@ -35,6 +35,8 @@ define_shaders! {
     probe_visualize "../shaders/probe_visualize.wgsl",
     raymarch "../shaders/raymarch.wgsl",
     ambient_trace "../shaders/ambient_trace.wgsl",
+    ambient_project "../shaders/ambient_project.wgsl",
+    ambient_reproject "../shaders/ambient_reproject.wgsl",
     visible_indirect_args "../shaders/visible_indirect_args.wgsl",
     shadow "../shaders/shadow.wgsl",
     ambient "../shaders/ambient.wgsl",
@@ -88,6 +90,8 @@ struct Pipelines {
     probe_border: wgpu::ComputePipeline,
     raymarch: wgpu::ComputePipeline,
     ambient_trace: wgpu::ComputePipeline,
+    ambient_project: wgpu::ComputePipeline,
+    ambient_reproject: wgpu::ComputePipeline,
     voxel_indirect_args: wgpu::ComputePipeline,
     chunk_indirect_args: wgpu::ComputePipeline,
     shadow: wgpu::ComputePipeline,
@@ -120,6 +124,8 @@ struct BindGroupLayouts {
     ambient_trace_gbuffer: wgpu::BindGroupLayout,
     ambient_trace_static: wgpu::BindGroupLayout,
     ambient_project_gbuffer: wgpu::BindGroupLayout,
+    ambient_reproject_gbuffer: wgpu::BindGroupLayout,
+    ambient_reproject_swap: wgpu::BindGroupLayout,
     specular_gbuffer: wgpu::BindGroupLayout,
     specular_swap: wgpu::BindGroupLayout,
     specular_static: wgpu::BindGroupLayout,
@@ -158,6 +164,8 @@ struct ScreenBindGroups {
     raymarch_swap: SwapchainBindGroup,
     ambient_trace_gbuffer: wgpu::BindGroup,
     ambient_project_gbuffer: wgpu::BindGroup,
+    ambient_reproject_gbuffer: wgpu::BindGroup,
+    ambient_reproject_swap: SwapchainBindGroup,
     specular_gbuffer: wgpu::BindGroup,
     specular_swap: SwapchainBindGroup,
     spec_spatial_gbuffer: wgpu::BindGroup,
@@ -214,7 +222,9 @@ struct ScreenTextures {
     velocity: Texture,
     gi_ray_radiance: Texture,
     gi_ray_direction: Texture,
-    gi_sh_rgb: [Texture; 3],
+    gi_sh_sample_rgb: [Texture; 3],
+    gi_sh_rgb: [SwapchainTexture; 3],
+    gi_history: SwapchainTexture,
     specular: Texture,
     specular_direction: Texture,
     specular_spatial: Texture,
@@ -274,14 +284,28 @@ impl ScreenTextures {
                 .d2()
                 .usage(TextureUsages::STORAGE_BINDING)
                 .create(device),
+            gi_sh_sample_rgb: ["gi_sh_sample_r", "gi_sh_sample_g", "gi_sh_sample_b"].map(|l| {
+                texture(l)
+                    .rgba16float()
+                    .size(half_size)
+                    .d2()
+                    .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                    .create(device)
+            }),
             gi_sh_rgb: ["gi_sh_r", "gi_sh_g", "gi_sh_b"].map(|l| {
                 texture(l)
                     .rgba16float()
                     .size(half_size)
                     .d2()
-                    .usage(TextureUsages::STORAGE_BINDING)
-                    .create(device)
+                    .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                    .create_swap(device)
             }),
+            gi_history: texture("gi_history")
+                .r32uint()
+                .size(half_size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create_swap(device),
             specular: texture("specular")
                 .rgba16float()
                 .size(half_size)
@@ -507,6 +531,34 @@ impl Renderer {
                     storage_texture().rgba16float().dimension_2d().write_only(),
                 ),
             ),
+            ambient_reproject_gbuffer: device.layout(
+                "ambient_reproject_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                ),
+            ),
+            ambient_reproject_swap: device.layout(
+                "ambient_reproject_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().read_write(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
+                    storage_texture().r32uint().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                ),
+            ),
             specular_gbuffer: device.layout(
                 "specular_gbuffer",
                 ShaderStages::COMPUTE,
@@ -587,6 +639,10 @@ impl Renderer {
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
                 ),
             ),
             deferred_static: device.layout(
@@ -704,6 +760,16 @@ impl Renderer {
                     &bg_layouts.ambient_trace_gbuffer,
                     &bg_layouts.specular_swap,
                     &bg_layouts.ambient_trace_static,
+                    &bg_layouts.per_frame_shared,
+                ]),
+            ambient_project: device
+                .compute_pipeline("ambient_project", &shaders.ambient_project)
+                .layout(&[&bg_layouts.ambient_project_gbuffer]),
+            ambient_reproject: device
+                .compute_pipeline("ambient_reproject", &shaders.ambient_reproject)
+                .layout(&[
+                    &bg_layouts.ambient_reproject_gbuffer,
+                    &bg_layouts.ambient_reproject_swap,
                     &bg_layouts.per_frame_shared,
                 ]),
             specular: device
@@ -1290,9 +1356,13 @@ impl Renderer {
         let velocity = gbuffer.velocity.view();
         let gi_ray_radiance = gbuffer.gi_ray_radiance.view();
         let gi_ray_direction = gbuffer.gi_ray_direction.view();
+        let gi_sh_sample_r = gbuffer.gi_sh_sample_rgb[0].view();
+        let gi_sh_sample_g = gbuffer.gi_sh_sample_rgb[1].view();
+        let gi_sh_sample_b = gbuffer.gi_sh_sample_rgb[2].view();
         let gi_sh_r = gbuffer.gi_sh_rgb[0].view();
-        let gi_sh_g = gbuffer.gi_sh_rgb[0].view();
-        let gi_sh_b = gbuffer.gi_sh_rgb[0].view();
+        let gi_sh_g = gbuffer.gi_sh_rgb[1].view();
+        let gi_sh_b = gbuffer.gi_sh_rgb[2].view();
+        let gi_history = gbuffer.gi_history.view();
         let specular = gbuffer.specular.view();
         let specular_direction = gbuffer.specular_direction.view();
         let specular_spatial = gbuffer.specular_spatial.view();
@@ -1328,11 +1398,39 @@ impl Renderer {
                 "ambient_project_gbuffer",
                 &layouts.ambient_project_gbuffer,
                 [
+                    gi_ray_radiance.as_binding(),
                     gi_ray_direction.as_binding(),
-                    gi_ray_direction.as_binding(),
-                    gi_sh_r.as_binding(),
-                    gi_sh_g.as_binding(),
-                    gi_sh_b.as_binding(),
+                    gi_sh_sample_r.as_binding(),
+                    gi_sh_sample_g.as_binding(),
+                    gi_sh_sample_b.as_binding(),
+                ],
+            ),
+            ambient_reproject_gbuffer: device.bind_group(
+                "ambient_reproject_gbuffer",
+                &layouts.ambient_reproject_gbuffer,
+                [
+                    gi_sh_sample_r.as_binding(),
+                    gi_sh_sample_g.as_binding(),
+                    gi_sh_sample_b.as_binding(),
+                    velocity.as_binding(),
+                ],
+            ),
+            ambient_reproject_swap: device.bind_group_swap(
+                "ambient_reproject_swap",
+                &layouts.ambient_reproject_swap,
+                [
+                    gi_sh_r.both(),
+                    gi_sh_g.both(),
+                    gi_sh_b.both(),
+                    gi_history.both(),
+                    gi_sh_r.both_reversed(),
+                    gi_sh_g.both_reversed(),
+                    gi_sh_b.both_reversed(),
+                    gi_history.both_reversed(),
+                    normal.both(),
+                    depth.both(),
+                    normal.both_reversed(),
+                    depth.both_reversed(),
                 ],
             ),
             specular_gbuffer: device.bind_group(
@@ -1389,7 +1487,15 @@ impl Renderer {
             deferred_swap: device.bind_group_swap(
                 "deferred_swap",
                 &layouts.deferred_swap,
-                [normal.both(), depth.both(), acc_specular.both()],
+                [
+                    normal.both(),
+                    depth.both(),
+                    acc_specular.both(),
+                    gi_sh_r.both(),
+                    gi_sh_g.both(),
+                    gi_sh_b.both(),
+                    gi_history.both(),
+                ],
             ),
             taa_input: device.bind_group(
                 "taa_input",
@@ -1680,6 +1786,39 @@ impl Renderer {
 
             pass.insert_debug_marker("ambient trace");
             pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
+        }
+
+        // ambient project pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Ambient Project", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.ambient_project);
+            pass.set_bind_group(0, &screen_bind_groups.ambient_project_gbuffer, &[]);
+
+            let size_half = self.size.map(|x| x.div_ceil(2));
+
+            pass.insert_debug_marker("ambient project");
+            pass.dispatch_workgroups(size_half.x.div_ceil(8), size_half.y.div_ceil(8), 1);
+        }
+
+        // ambient reproject pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Ambient Reproject", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.ambient_reproject);
+            pass.set_bind_group(0, &screen_bind_groups.ambient_reproject_gbuffer, &[]);
+            pass.set_bind_group_swap(
+                1,
+                &screen_bind_groups.ambient_reproject_swap,
+                &[],
+                self.frame_id,
+            );
+            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+
+            let size_half = self.size.map(|x| x.div_ceil(2));
+
+            pass.insert_debug_marker("ambient reproject");
+            pass.dispatch_workgroups(size_half.x.div_ceil(8), size_half.y.div_ceil(8), 1);
         }
 
         // // copy over indirect args for the per-voxel dispatches

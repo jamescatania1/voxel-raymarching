@@ -111,14 +111,14 @@ fn compute_main(in: ComputeIn) {
     let ls_pos = ray.origin + ray.direction * ray_length;
 
     var trace = trace(pos, ls_pos, ls_normal, voxel.ls_hit_normal);
+    let ws_direction = normalize(model.normal_transform * trace.dir);
 
     textureStore(tex_out_ray_radiance, pos, vec4(trace.radiance, 1.0));
-    textureStore(tex_out_ray_direction, pos, vec4(trace.dir, 1.0));
+    textureStore(tex_out_ray_direction, pos, vec4(ws_direction, 1.0));
 }
 
 struct TraceResult {
     radiance: vec3<f32>,
-    hit_pos: vec3<f32>,
     dir: vec3<f32>,
     hit: bool,
 }
@@ -138,8 +138,7 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
         let hit_ws_normal = normalize(model.normal_transform * hit.normal);
 
         let hit_shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) != 0u);
-        var irradiance = textureSampleLevel(tex_skybox, sampler_linear, hit_ws_normal.xzy, 0.0).rgb;
-        irradiance = min(irradiance, vec3(15.0)) * environment.indirect_sky_intensity;
+        let irradiance = 2.0 * vec3(1.0); // TODO add multi bounce
 
         let ndl = max(dot(hit_ws_normal, environment.sun_direction), 0.0);
 
@@ -152,13 +151,9 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
 
         let diffuse = (direct + irradiance) * hit_albedo + emissive;
 
-        let ls_hit_pos = in.origin + in.direction * hit.depth;
-        let ws_hit_pos = (model.transform * vec4(ls_hit_pos, 1.0)).xyz;
-
         var res: TraceResult;
         res.radiance = diffuse;
         res.hit = true;
-        res.hit_pos = ws_hit_pos;
         res.dir = dir;
         return res;
     } else {

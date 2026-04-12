@@ -193,7 +193,6 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 }
 
 fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
-    return true;
     if acc.is_sky {
         return false;
     }

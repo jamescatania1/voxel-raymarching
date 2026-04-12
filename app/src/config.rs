@@ -57,7 +57,7 @@ impl Default for Config {
             shadow_filter_radius: 7.0,
             voxel_normal_factor: 0.5,
             roughness_multiplier: 1.0,
-            indirect_sky_intensity: 2.2,
+            indirect_sky_intensity: 1.0,
             ambient_ray_max_distance: 500,
             irradiance_probe_scale: 64,
             view: Default::default(),

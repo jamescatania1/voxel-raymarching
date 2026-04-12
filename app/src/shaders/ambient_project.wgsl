@@ -14,7 +14,7 @@ const PI: f32 = 3.14159265359;
 fn compute_main(in: ComputeIn) {
     let pos = vec2<i32>(in.id.xy);
     let dimensions = textureDimensions(tex_out_sh_r).xy;
-    if any(in.id.xy > dimensions) {
+    if any(in.id.xy >= dimensions) {
         return;
     }
 
@@ -49,7 +49,7 @@ fn compute_main(in: ComputeIn) {
     }
 
     if weight > 0.0 {
-        weight = PI / weight;
+        weight = 2.0 * PI / weight;
         sh_r *= weight;
         sh_g *= weight;
         sh_b *= weight;

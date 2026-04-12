@@ -16,6 +16,10 @@ struct VoxelLighting {
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
 @group(1) @binding(2) var tex_specular: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(3) var tex_radiance_sh_r: texture_2d<f32>;
+@group(1) @binding(4) var tex_radiance_sh_g: texture_2d<f32>;
+@group(1) @binding(5) var tex_radiance_sh_b: texture_2d<f32>;
+@group(1) @binding(6) var tex_radiance_history: texture_storage_2d<r32uint, read>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -86,6 +90,80 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
+fn evaluate_irradiance(uv: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let sh_r = textureSampleLevel(tex_radiance_sh_r, sampler_linear, uv, 0.0);
+    let sh_g = textureSampleLevel(tex_radiance_sh_g, sampler_linear, uv, 0.0);
+    let sh_b = textureSampleLevel(tex_radiance_sh_b, sampler_linear, uv, 0.0);
+
+    let basis = vec4(
+        0.886226925,
+        1.023326708 * normal.y,
+        1.023326708 * normal.z,
+        1.023326708 * normal.x,
+    );
+
+    let res = vec3(
+        dot(sh_r, basis),
+        dot(sh_g, basis),
+        dot(sh_b, basis)
+    );
+    return max(res, vec3(0.0));
+}
+
+fn evaluate_irradiance_zh3(uv: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
+
+    // debug show disocclusions
+    let pos = vec2<u32>(vec2<f32>(textureDimensions(tex_radiance_history).xy) * uv);
+    let history_len = textureLoad(tex_radiance_history, pos).r;
+    if history_len <= 1u {
+        // return vec3(1.0, 0.0, 0.0);
+    }
+
+    let sh_r = textureSampleLevel(tex_radiance_sh_r, sampler_linear, uv, 0.0);
+    let sh_g = textureSampleLevel(tex_radiance_sh_g, sampler_linear, uv, 0.0);
+    let sh_b = textureSampleLevel(tex_radiance_sh_b, sampler_linear, uv, 0.0);
+
+    const LUMA_WEIGHTS: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let luma_l1 = vec3(
+        dot(vec3(sh_r.w, sh_g.w, sh_b.w), LUMA_WEIGHTS),
+        dot(vec3(sh_r.y, sh_g.y, sh_b.y), LUMA_WEIGHTS),
+        dot(vec3(sh_r.z, sh_g.z, sh_b.z), LUMA_WEIGHTS),
+    );
+    let zonal_axis = normalize(luma_l1);
+
+    let l1_r = vec3(sh_r.w, sh_r.y, sh_r.z);
+    let l1_g = vec3(sh_g.w, sh_g.y, sh_g.z);
+    let l1_b = vec3(sh_b.w, sh_b.y, sh_b.z);
+
+    var ratio = vec3(
+        abs(dot(l1_r, zonal_axis)),
+        abs(dot(l1_g, zonal_axis)),
+        abs(dot(l1_b, zonal_axis)),
+    );
+    let dc = vec3(sh_r.x, sh_g.x, sh_b.x);
+    ratio /= dc;
+
+    let zonal_l2_coeff = dc * (0.08 * ratio + 0.6 * ratio * ratio);
+    let f_z = dot(zonal_axis, normal);
+    let zh_dir = sqrt(5.0 / (16.0 * PI)) * (3.0 * f_z * f_z - 1.0);
+
+    let basis = vec4(
+        0.886226925,
+        1.023326708 * normal.y,
+        1.023326708 * normal.z,
+        1.023326708 * normal.x,
+    );
+
+    var res = vec3(
+        dot(sh_r, basis),
+        dot(sh_g, basis),
+        dot(sh_b, basis)
+    );
+    res += 0.25 * zonal_l2_coeff * zh_dir;
+
+    return max(res, vec3(0.0));
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let pos = vec2<i32>(in.id.xy);
@@ -127,9 +205,10 @@ fn compute_main(in: ComputeIn) {
 
     let shadow_occluded = (voxel_shadow_mask[voxel_id >> 5u] & (1u << (voxel_id & 31u))) != 0u;
 
-    let ls_normal = model.inv_normal_transform * voxel.ws_normal;
-    let irradiance = sample_irradiance(ls_pos, ls_normal);
+    let ls_normal = normalize(model.inv_normal_transform * voxel.ws_normal);
+    // let irradiance = sample_irradiance(ls_pos, ls_normal);
     // let irradiance = sample_irradiance(ls_pos, voxel.ls_hit_normal);
+    let irradiance = evaluate_irradiance_zh3(uv, voxel.ws_normal);
 
     var surface: PbrInput;
     surface.uv = uv;
@@ -168,11 +247,12 @@ fn compute_main(in: ComputeIn) {
             color = vec3(surface.shadow);
         }
         case 8u {
-            color = surface.irradiance;
+            color = surface.irradiance * 0.1;
         }
         case 9u {
             // color = vec3(surface.specular);
-            color = sample_irradiance(ls_pos, voxel.ls_hit_normal);
+            // color = sample_irradiance(ls_pos, voxel.ls_hit_normal);
+            color = evaluate_irradiance(uv, voxel.ws_normal) * 0.1;
         }
         case 10u {
             // color = vec3(abs(velocity), 0.0);

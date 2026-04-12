@@ -40,7 +40,7 @@ impl App {
 
         let mut limits = wgpu::Limits::default();
         limits.max_storage_buffer_binding_size = 512 * 1024 * 1024;
-        limits.max_storage_textures_per_shader_stage = 6;
+        limits.max_storage_textures_per_shader_stage = 12;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
