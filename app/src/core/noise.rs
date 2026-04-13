@@ -61,7 +61,6 @@ pub fn noise_uniform_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result
 
 #[allow(unused)]
 pub fn noise_stbn_coshemi(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
-    // $(std::include_bytes!(concat!("../../assets/noise/sphere_uniform_gauss1_0_exp0101_separate05_", $n, ".png"))),*
     macro_rules! include_images {
         ($($n:expr),*) => {
             [
@@ -124,40 +123,39 @@ pub fn noise_stbn_coshemi(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<
     Ok(res)
 }
 
-pub fn noise_vector3_uniform_binomial3x3_exp_product(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> Result<wgpu::Texture> {
+#[allow(unused)]
+pub fn noise_stbn_scalar(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
     macro_rules! include_images {
         ($($n:expr),*) => {
             [
-                $(std::include_bytes!(concat!("../../assets/noise/vector3_uniform_binomial3x3_exp0101_product_", $n, ".png"))),*
+                $(std::include_bytes!(concat!("../../assets/noise/stbn_scalar_2Dx1Dx1D_128x128x64x1_", $n, ".png"))),*
             ]
         }
     }
-    static IMAGE_SRC: [&[u8]; 32] = include_images!(
+    static IMAGE_SRC: [&[u8]; 64] = include_images!(
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-        25, 26, 27, 28, 29, 30, 31
+        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+        48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
     );
     let images = IMAGE_SRC
         .iter()
         .map(|src| {
             image::load_from_memory_with_format(src, image::ImageFormat::Png)
-                .map(|img| img.to_rgba8())
+                .map(|img| img.to_luma8())
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     let res = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("blue_noise"),
+        label: Some("noise_stbn_scalar"),
         size: wgpu::Extent3d {
             width: images[0].width(),
             height: images[0].height(),
-            depth_or_array_layers: 32,
+            depth_or_array_layers: 64,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D3,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: wgpu::TextureFormat::R8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -176,7 +174,7 @@ pub fn noise_vector3_uniform_binomial3x3_exp_product(
             img,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * img.width()),
+                bytes_per_row: Some(img.width()),
                 rows_per_image: Some(img.height()),
             },
             wgpu::Extent3d {

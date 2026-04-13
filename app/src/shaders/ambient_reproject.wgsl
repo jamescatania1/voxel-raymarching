@@ -2,19 +2,19 @@
 @group(0) @binding(1) var tex_sh_g: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_sh_b: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(3) var tex_velocity: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(4) var tex_out_sh_r: texture_storage_2d<rgba16float, read_write>;
+@group(0) @binding(5) var tex_out_sh_g: texture_storage_2d<rgba16float, read_write>;
+@group(0) @binding(6) var tex_out_sh_b: texture_storage_2d<rgba16float, read_write>;
 
-@group(1) @binding(0) var tex_out_sh_r: texture_storage_2d<rgba16float, read_write>;
-@group(1) @binding(1) var tex_out_sh_g: texture_storage_2d<rgba16float, read_write>;
-@group(1) @binding(2) var tex_out_sh_b: texture_storage_2d<rgba16float, read_write>;
-@group(1) @binding(3) var tex_out_history: texture_storage_2d<r32uint, write>;
-@group(1) @binding(4) var tex_prev_sh_r: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(5) var tex_prev_sh_g: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(6) var tex_prev_sh_b: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(7) var tex_prev_history: texture_storage_2d<r32uint, read>;
-@group(1) @binding(8) var tex_cur_normal: texture_storage_2d<r32uint, read>;
-@group(1) @binding(9) var tex_cur_depth: texture_storage_2d<r32float, read>;
-@group(1) @binding(10) var tex_prev_normal: texture_storage_2d<r32uint, read>;
-@group(1) @binding(11) var tex_prev_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(0) var tex_out_history: texture_storage_2d<r32uint, write>;
+@group(1) @binding(1) var tex_prev_sh_r: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(2) var tex_prev_sh_g: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(3) var tex_prev_sh_b: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(4) var tex_prev_history: texture_storage_2d<r32uint, read>;
+@group(1) @binding(5) var tex_cur_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(6) var tex_cur_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(7) var tex_prev_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(8) var tex_prev_depth: texture_storage_2d<r32float, read>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -59,11 +59,8 @@ struct Model {
 
 const PI: f32 = 3.14159265359;
 
-const MAX_HISTORY_LEN: u32 = 128;
-const PLANE_DISTANCE_THRESHOLD: f32 = 0.01;
-const NORMAL_THRESHOLD: f32 = 0.75;
-// const PLANE_DISTANCE_THRESHOLD: f32 = 0.1;
-// const NORMAL_THRESHOLD: f32 = 0.906;
+const MAX_HISTORY_LEN: u32 = 64;
+const PLANE_DISTANCE_THRESHOLD: f32 = 0.1;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -86,40 +83,40 @@ fn compute_main(in: ComputeIn) {
     var sh_g = textureLoad(tex_sh_g, cur_half_pos);
     var sh_b = textureLoad(tex_sh_b, cur_half_pos);
 
-    var min_r = sh_r;
-    var max_r = sh_r;
-    var min_g = sh_g;
-    var max_g = sh_g;
-    var min_b = sh_b;
-    var max_b = sh_b;
-    for (var dy = -2; dy <= 2; dy++) {
-        for (var dx = -2; dx <= 2; dx++) {
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            let p = cur_half_pos + vec2(dx, dy);
-            if any(p < vec2(0)) || any(p >= dimensions_half) {
-                continue;
-            }
+    // var min_r = sh_r;
+    // var max_r = sh_r;
+    // var min_g = sh_g;
+    // var max_g = sh_g;
+    // var min_b = sh_b;
+    // var max_b = sh_b;
+    // for (var dy = -2; dy <= 2; dy++) {
+    //     for (var dx = -2; dx <= 2; dx++) {
+    //         if dx == 0 && dy == 0 {
+    //             continue;
+    //         }
+    //         let p = cur_half_pos + vec2(dx, dy);
+    //         if any(p < vec2(0)) || any(p >= dimensions_half) {
+    //             continue;
+    //         }
 
-            // TODO use shared memory
-            let n_r = textureLoad(tex_sh_r, p);
-            let n_g = textureLoad(tex_sh_g, p);
-            let n_b = textureLoad(tex_sh_b, p);
+    //         // TODO use shared memory
+    //         let n_r = textureLoad(tex_sh_r, p);
+    //         let n_g = textureLoad(tex_sh_g, p);
+    //         let n_b = textureLoad(tex_sh_b, p);
 
-            min_r = min(min_r, n_r); max_r = max(max_r, n_r);
-            min_g = min(min_g, n_g); max_g = max(max_g, n_g);
-            min_b = min(min_b, n_b); max_b = max(max_b, n_b);
-        }
-    }
-    // relaxing the clamp on the L1 range seems to improve things
-    // i'm not smart enough to give a real reason
-    let diff_r = vec4(0.0, max_r.yzw - min_r.yzw) * 0.25;
-    let diff_g = vec4(0.0, max_g.yzw - min_g.yzw) * 0.25;
-    let diff_b = vec4(0.0, max_b.yzw - min_b.yzw) * 0.25;
-    min_r -= diff_r; max_r += diff_r;
-    min_g -= diff_g; max_g += diff_g;
-    min_b -= diff_b; max_b += diff_b;
+    //         min_r = min(min_r, n_r); max_r = max(max_r, n_r);
+    //         min_g = min(min_g, n_g); max_g = max(max_g, n_g);
+    //         min_b = min(min_b, n_b); max_b = max(max_b, n_b);
+    //     }
+    // }
+    // // relaxing the clamp on the L1 range seems to improve things
+    // // i'm not smart enough to give a real reason
+    // let diff_r = vec4(0.0, max_r.yzw - min_r.yzw) * 0.25;
+    // let diff_g = vec4(0.0, max_g.yzw - min_g.yzw) * 0.25;
+    // let diff_b = vec4(0.0, max_b.yzw - min_b.yzw) * 0.25;
+    // min_r -= diff_r; max_r += diff_r;
+    // min_g -= diff_g; max_g += diff_g;
+    // min_b -= diff_b; max_b += diff_b;
 
     var prev = reproject(cur_half_pos);
 
@@ -130,9 +127,9 @@ fn compute_main(in: ComputeIn) {
         textureStore(tex_out_history, cur_half_pos, vec4(1));
         return;
     }
-    prev.sh_r = clamp(prev.sh_r, min_r, max_r);
-    prev.sh_g = clamp(prev.sh_g, min_g, max_g);
-    prev.sh_b = clamp(prev.sh_b, min_b, max_b);
+    // prev.sh_r = clamp(prev.sh_r, min_r, max_r);
+    // prev.sh_g = clamp(prev.sh_g, min_g, max_g);
+    // prev.sh_b = clamp(prev.sh_b, min_b, max_b);
 
     let history_len = min(MAX_HISTORY_LEN, prev.history_len + 1);
     let alpha = 1.0 / f32(history_len);
@@ -155,6 +152,13 @@ struct ReprojectResult {
     sh_b: vec4<f32>,
 }
 
+const OFFSETS: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
+    vec2<i32>(0, 0),
+    vec2<i32>(1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(1, 1),
+);
+
 fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
     let texel_size_half = 1.0 / vec2<f32>(dimensions_half);
     let texel_size_full = 1.0 / vec2<f32>(dimensions_full);
@@ -168,7 +172,7 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
         // get full res texel with closest depth to camera
         var closest_depth = -1.0;
         for (var i = 0; i < 4; i++) {
-            let sample_full_pos = cur_base_full_pos + vec2(i % 2, i / 2);
+            let sample_full_pos = cur_base_full_pos + OFFSETS[i];
             let depth = textureLoad(tex_cur_depth, sample_full_pos).r;
 
             if depth >= 0.0 && (closest_depth < 0.0 || depth < closest_depth) {
@@ -192,30 +196,67 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
     }
 
     let prev_uv = cur_uv - velocity;
-    let prev_half_pos = vec2<i32>(prev_uv * vec2<f32>(dimensions_half));
-    let prev_full_pos = vec2<i32>(prev_uv * vec2<f32>(dimensions_full));
+    let prev_origin = vec2<i32>(floor(prev_uv * vec2<f32>(dimensions_half) - 0.5));
 
-    if any(prev_half_pos < vec2(0)) || any(prev_half_pos >= dimensions_half) { // off screen
-        return ReprojectResult();
+    let f = fract(prev_uv * vec2<f32>(dimensions_half) - 0.5);
+    let w = array<f32,4>(
+        (1.0 - f.x) * (1.0 - f.y),
+        f.x * (1.0 - f.y),
+        (1.0 - f.x) * f.y,
+        f.x * f.y,
+    );
+
+    var weight_sum = 0.0;
+    var prev_history_len = 0u;
+    var prev_sum_r = vec4(0.0);
+    var prev_sum_g = vec4(0.0);
+    var prev_sum_b = vec4(0.0);
+    for (var i = 0; i < 4; i++) {
+        let offset = OFFSETS[i];
+
+        let sample_pos = prev_origin + offset;
+        if any(sample_pos < vec2(0)) || any(sample_pos >= dimensions_half) {
+            continue;
+        }
+
+        var valid = false;
+
+        for (var j = 0; j < 4; j++) {
+            let sample_pos_full = sample_pos * 2 + OFFSETS[j];
+            let sample_uv = (vec2<f32>(sample_pos_full) + 0.5) * texel_size_full;
+
+            let sample = gather_surface(sample_uv + prev_jitter, sample_pos_full, true);
+
+            if is_reprojection_valid(cur, sample) {
+                valid = true;
+                break;
+            }
+        }
+        if !valid {
+            continue;
+        }
+
+        let weight = w[i];
+        let history_len = textureLoad(tex_prev_history, sample_pos).r;
+        if history_len == 0 {
+            continue;
+        }
+        prev_history_len = max(prev_history_len, history_len);
+        prev_sum_r += weight * textureLoad(tex_prev_sh_r, sample_pos);
+        prev_sum_g += weight * textureLoad(tex_prev_sh_g, sample_pos);
+        prev_sum_b += weight * textureLoad(tex_prev_sh_b, sample_pos);
+        weight_sum += weight;
     }
 
-    let prev = gather_surface(prev_uv + prev_jitter, prev_full_pos, true);
-    if !is_reprojection_valid(cur, prev) {
+    if weight_sum < 0.001 {
         return ReprojectResult();
     }
-
     var res: ReprojectResult;
     res.valid = true;
-    res.history_len = textureLoad(tex_prev_history, prev_half_pos).r;
-    if res.history_len <= 1 {
-        res.sh_r = textureLoad(tex_out_sh_r, prev_half_pos);
-        res.sh_g = textureLoad(tex_out_sh_g, prev_half_pos);
-        res.sh_b = textureLoad(tex_out_sh_b, prev_half_pos);
-    } else {
-        res.sh_r = textureLoad(tex_prev_sh_r, prev_half_pos);
-        res.sh_g = textureLoad(tex_prev_sh_g, prev_half_pos);
-        res.sh_b = textureLoad(tex_prev_sh_b, prev_half_pos);
-    }
+    res.history_len = prev_history_len;
+    res.sh_r = prev_sum_r / weight_sum;
+    res.sh_g = prev_sum_g / weight_sum;
+    res.sh_b = prev_sum_b / weight_sum;
     return res;
 }
 
@@ -225,14 +266,14 @@ fn is_reprojection_valid(cur: Surface, prev: Surface) -> bool {
     }
 
     let cur_distance = length(cur.pos - environment.camera.ws_position);
-    let plane_dist = abs(dot(cur.pos - prev.pos, cur.normal));
+    let plane_dist = abs(dot(cur.pos - prev.pos, cur.hit_normal));
     if plane_dist > PLANE_DISTANCE_THRESHOLD * cur_distance {
         return false;
     }
 
-    if dot(cur.normal, prev.normal) < NORMAL_THRESHOLD {
-        return false;
-    }
+    // if dot(cur.normal, prev.normal) < NORMAL_THRESHOLD {
+    //     return false;
+    // }
 
     return true;
 }

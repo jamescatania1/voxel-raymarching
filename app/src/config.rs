@@ -38,12 +38,12 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             init_skybox: LIGHTMAPS.partly_cloudy,
-            init_scene: MODELS.bistro,
-            init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
+            // init_scene: MODELS.bistro,
+            // init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
             // init_scene: MODELS.san_miguel,
             // init_camera_pos: glam::dvec3(42.0, 10.0, 3.0),
-            // init_scene: MODELS.sponza,
-            // init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
+            init_scene: MODELS.sponza,
+            init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
             voxel_scale: 1,
             render_scale: 1.0,
             sun_azimuth: -2.5,

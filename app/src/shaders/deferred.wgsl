@@ -256,7 +256,10 @@ fn compute_main(in: ComputeIn) {
         }
         case 10u {
             // color = vec3(abs(velocity), 0.0);
-            color = sample_irradiance_debug();
+            // color = sample_irradiance_debug();
+            let pos = vec2<u32>(vec2<f32>(textureDimensions(tex_radiance_history).xy) * uv);
+            let history_len = textureLoad(tex_radiance_history, pos).r;
+            color = vec3(f32(history_len) / f32(128.0));
         }
         case 11u {
             color = textureSampleLevel(tex_skybox, sampler_linear, sky_ray_dir, 0.0).rgb;

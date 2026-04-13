@@ -138,7 +138,7 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
         let hit_ws_normal = normalize(model.normal_transform * hit.normal);
 
         let hit_shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) != 0u);
-        let irradiance = 2.0 * vec3(1.0); // TODO add multi bounce
+        let irradiance = 2.0 * vec3(1.0) * saturate(hit.depth / 500.0); // TODO add multi bounce
 
         let ndl = max(dot(hit_ws_normal, environment.sun_direction), 0.0);
 
