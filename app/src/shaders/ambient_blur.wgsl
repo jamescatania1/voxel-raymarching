@@ -20,7 +20,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -81,8 +81,8 @@ fn compute_main(in: ComputeIn) {
 
     let history_length = textureLoad(tex_history_len, pos).r;
 
-    var radius = texel_size * 10.0;
-    radius /= min(f32(history_length), 20.0);
+    var radius = texel_size * environment.ambient_filter_scale;
+    radius /= 2.0 + min(f32(history_length), 32.0);
 
     let noise = textureLoad(tex_noise, vec3(in.id.xy % vec2(128), frame.frame_id % 64), 0).r;
     let t = noise * 2.0 * PI;

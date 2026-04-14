@@ -411,7 +411,7 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_write(),
-                    storage_texture().rg16float().dimension_2d().read_write(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
                 ),
             ),
             probe_visualize_swap: device.layout(
@@ -962,7 +962,7 @@ impl Renderer {
                 .usage(TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING)
                 .create(device),
             probe_depth: texture("probe_depth")
-                .rg16float()
+                .rgba16float()
                 .size(glam::uvec3(2048, probe_count.div_ceil(128) * 16, 1))
                 .d2()
                 .usage(TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING)
@@ -1732,7 +1732,7 @@ impl Renderer {
                     prev_camera,
                     shadow_spread: config.shadow_spread,
                     per_voxel_secondary: config.per_voxel_secondary as u32,
-                    shadow_filter_radius: config.shadow_filter_radius,
+                    ambient_filter_scale: config.ambient_filter_scale,
                     max_ambient_distance: config.ambient_ray_max_distance,
                     voxel_normal_factor: config.voxel_normal_factor,
                     roughness_multiplier: config.roughness_multiplier,

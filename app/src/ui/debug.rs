@@ -240,9 +240,9 @@ impl DebugWindow {
                 ui.checkbox(&mut config.per_voxel_secondary, "");
                 ui.end_row();
 
-                ui.label("Shadow Filter Radius");
+                ui.label("Ambient Filter Scale");
                 ui.add(egui::Slider::new(
-                    &mut config.shadow_filter_radius,
+                    &mut config.ambient_filter_scale,
                     0.0..=20.0,
                 ));
             });

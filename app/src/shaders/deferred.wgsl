@@ -53,7 +53,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -335,10 +335,6 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
         let diffuse = k_d * in.irradiance * in.albedo / PI;
-
-        // let smoothing = exp2(-16.0 * in.roughness - 1.0);
-        // let specular_occlusion = saturate(pow(ndv + 1.0 - in.ao, smoothing) - 1.0 + (1.0 - in.ao));
-        // let ibl_occluded = specular_occlusion * sky_prefilter;
 
         let specular = sky_prefilter * 0.0 * (f_0 * sky_brdf.x + sky_brdf.y);
         // let specular = in.specular * (f_0 * sky_brdf.x + sky_brdf.y);

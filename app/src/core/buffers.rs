@@ -13,7 +13,7 @@ pub struct EnvironmentDataBuffer {
     pub prev_camera: CameraDataBuffer,
     pub shadow_spread: f32,
     pub per_voxel_secondary: u32,
-    pub shadow_filter_radius: f32,
+    pub ambient_filter_scale: f32,
     pub max_ambient_distance: u32,
     pub voxel_normal_factor: f32,
     pub roughness_multiplier: f32,

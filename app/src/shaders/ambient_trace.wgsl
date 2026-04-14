@@ -49,7 +49,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -124,11 +124,11 @@ struct TraceResult {
 }
 
 fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal: vec3<f32>) -> TraceResult {
-    let dir = rand_hemisphere_direction(vec2<u32>(pos), ls_normal);
+    let sample = generate_sample_direction(vec2<u32>(pos), ls_normal);
 
     var in: Ray;
     in.origin = ls_pos + environment.shadow_bias * ls_hit_normal;
-    in.direction = dir;
+    in.direction = sample.dir;
 
     let hit = raymarch(in);
 
@@ -138,7 +138,8 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
         let hit_ws_normal = normalize(model.normal_transform * hit.normal);
 
         let hit_shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) != 0u);
-        let irradiance = 2.0 * vec3(1.0) * saturate(hit.depth / 500.0); // TODO add multi bounce
+        // let irradiance = 2.0 * vec3(1.0) * saturate(hit.depth / 3500.0); // TODO add multi bounce
+        let hit_irradiance = vec3(2.0);
 
         let ndl = max(dot(hit_ws_normal, environment.sun_direction), 0.0);
 
@@ -146,18 +147,18 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
 
         var emissive = vec3(0.0);
         if hit_voxel.is_emissive {
-            emissive = hit_albedo * hit_voxel.emissive_intensity * 5.0;
+            // emissive = hit_albedo * hit_voxel.emissive_intensity * 5.0;
         }
 
-        let diffuse = (direct + irradiance) * hit_albedo + emissive;
+        let radiance = (direct + hit_irradiance) * hit_albedo / PI + emissive;
 
         var res: TraceResult;
-        res.radiance = diffuse;
+        res.radiance = radiance / sample.pdf;
         res.hit = true;
-        res.dir = dir;
+        res.dir = sample.dir;
         return res;
     } else {
-        let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
+        let ws_ray_dir = normalize((model.transform * vec4(sample.dir, 0.0)).xyz);
         let rot_dir = vec3(
             ws_ray_dir.x * environment.skybox_rotation.x - ws_ray_dir.y * environment.skybox_rotation.y,
             ws_ray_dir.x * environment.skybox_rotation.y + ws_ray_dir.y * environment.skybox_rotation.x,
@@ -167,21 +168,43 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
         sky_color = min(sky_color, vec3(10.0)) * environment.indirect_sky_intensity;
 
         var res: TraceResult;
-        res.radiance = sky_color;
+        res.radiance = sky_color / sample.pdf;
         res.hit = false;
-        res.dir = dir;
+        res.dir = sample.dir;
         return res;
     }
 }
 
-fn rand_hemisphere_direction(pos: vec2<u32>, n: vec3<f32>) -> vec3<f32> {
+struct RaySample {
+    dir: vec3<f32>,
+    pdf: f32,
+}
+fn generate_sample_direction(pos: vec2<u32>, n: vec3<f32>) -> RaySample {
+    const OFFSET: vec2<f32> = vec2<f32>(0.61803398875, 0.41421356237);
+
+    let frame_offset = vec2<u32>(OFFSET * 128.0 * f32((frame.frame_id >> 6u) & 0xffu));
+    let id = pos + frame_offset;
+
     let sample_pos = vec3(
-        pos.x & 127,
-        pos.y & 127,
+        id.x & 127,
+        id.y & 127,
         frame.frame_id & 63,
     );
-    let tangent_dir = textureLoad(tex_noise, sample_pos, 0).rgb * 2.0 - 1.0;
-    return align_direction(tangent_dir, n);
+    let sample = textureLoad(tex_noise, sample_pos, 0).rgb * 2.0 - 1.0;
+
+    // bring it back to uniform hemisphere distribution
+    // cosine weighting messes with SH2, since fewer samples are at grazing angles
+    // and the pdf normalization makes that blow up
+    // stbn doesn't have a uniform hemisphere texture so i'm just doing this for now
+    let z = sample.z * sample.z;
+    let xy = sample.xy * sqrt(1.0 + z);
+    let tangent_dir_uniform = vec3(xy, z);
+
+    var res: RaySample;
+    res.dir = align_direction(tangent_dir_uniform, n);
+    res.pdf = 1.0 / (2.0 * PI);
+    // res.pdf = tangent_dir.z / PI; // if cosine weighted
+    return res;
 }
 
 // aligns dir to n's tangent space

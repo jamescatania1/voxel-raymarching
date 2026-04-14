@@ -26,7 +26,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -207,6 +207,7 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
     );
 
     var weight_sum = 0.0;
+    var valid_count = 0u;
     var prev_history_len = 0u;
     var prev_sum_r = vec4(0.0);
     var prev_sum_g = vec4(0.0);
@@ -241,7 +242,8 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
         if history_len == 0 {
             continue;
         }
-        prev_history_len = max(prev_history_len, history_len);
+        valid_count += 1u;
+        prev_history_len += history_len;
         prev_sum_r += weight * textureLoad(tex_prev_sh_r, sample_pos);
         prev_sum_g += weight * textureLoad(tex_prev_sh_g, sample_pos);
         prev_sum_b += weight * textureLoad(tex_prev_sh_b, sample_pos);
@@ -253,7 +255,7 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
     }
     var res: ReprojectResult;
     res.valid = true;
-    res.history_len = prev_history_len;
+    res.history_len = u32(ceil(f32(prev_history_len) / f32(valid_count)));
     res.sh_r = prev_sum_r / weight_sum;
     res.sh_g = prev_sum_g / weight_sum;
     res.sh_b = prev_sum_b / weight_sum;

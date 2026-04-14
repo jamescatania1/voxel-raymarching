@@ -40,6 +40,7 @@ fn compute_main(in: ComputeIn) {
 
             // TODO real gaussian weights/anything spatial that makes sense
             let w = (1.0 - 0.5 * f32(abs(dx))) * (1.0 - 0.5 * f32(abs(dy)));
+            // let w = 1.0;
 
             sh_r += radiance.r * basis * w;
             sh_g += radiance.g * basis * w;
@@ -49,7 +50,7 @@ fn compute_main(in: ComputeIn) {
     }
 
     if weight > 0.0 {
-        weight = 2.0 * PI / weight;
+        weight = 1.0 / weight;
         sh_r *= weight;
         sh_g *= weight;
         sh_b *= weight;
