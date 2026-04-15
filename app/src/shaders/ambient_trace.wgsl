@@ -85,30 +85,76 @@ struct ComputeIn {
 }
 
 const PI = 3.14159265359;
-const TRACE_INV_SCALE: i32 = 4;
+
+const OFFSETS: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
+    vec2<i32>(0, 0),
+    vec2<i32>(1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(1, 1),
+);
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
+    // let half_offset = select(
+    //     vec2(frame.frame_id & 1, 0),
+    //     vec2(1, 1 - (frame.frame_id & 1)),
+    //     in.id.z == 1u,
+    // );
     let pos = vec2<i32>(in.id.xy);
     let dimensions = textureDimensions(tex_out_ray_radiance).xy;
+    if any(in.id.xy >= dimensions) {
+        return;
+    }
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
-    let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-    let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter * 0.5) * texel_size;
+    let pos_full = pos * 2 + OFFSETS[frame.frame_id & 3u];
+    let texel_size_full = texel_size * 0.5;
 
-    let ray_length = textureLoad(tex_depth, pos * TRACE_INV_SCALE).r;
-    if ray_length < 0.0 {
+    // var depth = 0.0;
+    // for (var i = 0; i < 4; i++) {
+    // let sample_pos_full = pos_full + OFFSETS[i];
+    // 
+    // }
+
+    let jitter = texel_size_full * select(vec2(0.0), environment.camera.jitter - 0.5, frame.taa_enabled != 0u);
+
+    // let uv = (vec2<f32>(pos) + 0.5) * texel_size;
+    let uv = (vec2<f32>(pos_full) + 0.5) * texel_size_full;
+    // let uv = (vec2<f32>(pos_full) + jitter) * texel_size_full;
+
+    // let uv = (vec2<f32>(pos) + 0.5) * texel_size;
+    // let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter * 0.5) * texel_size;
+
+    // let ray_length = textureLoad(tex_depth, pos_full).r;
+
+    let depth = textureLoad(tex_depth, pos_full).r;
+    if depth < 0.0 {
         // primary ray missed
         return;
     }
+    // var depth = 0.0;
+    // var valid_count = 0u;
+    // for (var i = 0; i < 4; i++) {
+    //     let sample_depth = textureLoad(tex_depth, pos_full + OFFSETS[i]).r;
+    //     if sample_depth >= 0.0 {
+    //         depth += sample_depth;
+    //         valid_count += 1;
+    //     }
+    // }
+    // if valid_count == 0u {
+    //     // primary ray missed
+    //     return;
+    // }
+    // depth /= f32(valid_count);
 
-    let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
+    let ray = primary_ray(uv + jitter);
+    // let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
-    let packed = textureLoad(tex_normal, pos * TRACE_INV_SCALE).r;
+    let packed = textureLoad(tex_normal, pos_full).r;
     let voxel = unpack_voxel(packed);
 
     let ls_normal = normalize(model.inv_normal_transform * voxel.ws_normal);
-    let ls_pos = ray.origin + ray.direction * ray_length;
+    let ls_pos = ray.origin + ray.direction * depth;
 
     var trace = trace(pos, ls_pos, ls_normal, voxel.ls_hit_normal);
     let ws_direction = normalize(model.normal_transform * trace.dir);
@@ -138,8 +184,8 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
         let hit_ws_normal = normalize(model.normal_transform * hit.normal);
 
         let hit_shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) != 0u);
-        // let irradiance = 2.0 * vec3(1.0) * saturate(hit.depth / 3500.0); // TODO add multi bounce
-        let hit_irradiance = vec3(2.0);
+        let irradiance = 2.0 * vec3(1.0) * saturate(hit.depth / 3500.0); // TODO add multi bounce
+        // let hit_irradiance = vec3(2.0);
 
         let ndl = max(dot(hit_ws_normal, environment.sun_direction), 0.0);
 
@@ -150,7 +196,7 @@ fn trace(pos: vec2<i32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, ls_hit_normal:
             // emissive = hit_albedo * hit_voxel.emissive_intensity * 5.0;
         }
 
-        let radiance = (direct + hit_irradiance) * hit_albedo / PI + emissive;
+        let radiance = (direct + irradiance) * hit_albedo / PI + emissive;
 
         var res: TraceResult;
         res.radiance = radiance / sample.pdf;

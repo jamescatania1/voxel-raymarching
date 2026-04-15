@@ -66,16 +66,14 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-var<private> dimensions_half: vec2<i32>;
-var<private> dimensions_full: vec2<i32>;
+var<private> dimensions: vec2<i32>;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
-    dimensions_half = vec2<i32>(textureDimensions(tex_sh_r).xy);
-    dimensions_full = vec2<i32>(textureDimensions(tex_velocity).xy);
+    dimensions = vec2<i32>(textureDimensions(tex_sh_r).xy);
 
     let cur_half_pos = vec2<i32>(in.id.xy);
-    if any(cur_half_pos >= dimensions_half) {
+    if any(cur_half_pos >= dimensions) {
         return;
     }
 
@@ -160,45 +158,45 @@ const OFFSETS: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
 );
 
 fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
-    let texel_size_half = 1.0 / vec2<f32>(dimensions_half);
-    let texel_size_full = 1.0 / vec2<f32>(dimensions_full);
+    let texel_size_half = 1.0 / vec2<f32>(dimensions);
+    let texel_size_full = texel_size_half * 0.5;
 
     let cur_jitter = texel_size_full * select(vec2(0.0), environment.camera.jitter - 0.5, frame.taa_enabled != 0u);
     let prev_jitter = texel_size_full * select(vec2(0.0), environment.prev_camera.jitter - 0.5, frame.taa_enabled != 0u);
 
     let cur_base_full_pos = cur_half_pos * 2;
-    var cur_sample_full_pos = cur_base_full_pos;
-    {
-        // get full res texel with closest depth to camera
-        var closest_depth = -1.0;
-        for (var i = 0; i < 4; i++) {
-            let sample_full_pos = cur_base_full_pos + OFFSETS[i];
-            let depth = textureLoad(tex_cur_depth, sample_full_pos).r;
+    var cur_pos_full = cur_base_full_pos + OFFSETS[frame.frame_id & 3u];
+    // {
+    //     // get full res texel with closest depth to camera
+    //     var closest_depth = -1.0;
+    //     for (var i = 0; i < 4; i++) {
+    //         let sample_full_pos = cur_base_full_pos + OFFSETS[i];
+    //         let depth = textureLoad(tex_cur_depth, sample_full_pos).r;
 
-            if depth >= 0.0 && (closest_depth < 0.0 || depth < closest_depth) {
-                closest_depth = depth;
-                cur_sample_full_pos = sample_full_pos;
-            }
-        }
-        if closest_depth < 0.0 { // sky
-            return ReprojectResult();
-        }
-    }
+    //         if depth >= 0.0 && (closest_depth < 0.0 || depth < closest_depth) {
+    //             closest_depth = depth;
+    //             cur_pos_full = sample_full_pos;
+    //         }
+    //     }
+    //     if closest_depth < 0.0 { // sky
+    //         return ReprojectResult();
+    //     }
+    // }
 
-    let velocity = textureLoad(tex_velocity, cur_sample_full_pos).rg;
+    let velocity = textureLoad(tex_velocity, cur_pos_full).rg;
 
-    let cur_uv = (vec2<f32>(cur_half_pos) + 0.5) * texel_size_half;
-    let cur_sample_uv = (vec2<f32>(cur_sample_full_pos) + 0.5) * texel_size_full;
+    // let cur_uv = (vec2<f32>(cur_half_pos) + 0.5) * texel_size_half;
+    let cur_uv = (vec2<f32>(cur_pos_full) + 0.5) * texel_size_full;
 
-    let cur = gather_surface(cur_sample_uv + cur_jitter, cur_sample_full_pos, false);
+    let cur = gather_surface(cur_uv + cur_jitter, cur_pos_full, false);
     if cur.sky {
         return ReprojectResult();
     }
 
     let prev_uv = cur_uv - velocity;
-    let prev_origin = vec2<i32>(floor(prev_uv * vec2<f32>(dimensions_half) - 0.5));
+    let prev_origin = vec2<i32>(floor(prev_uv * vec2<f32>(dimensions) - 0.5));
 
-    let f = fract(prev_uv * vec2<f32>(dimensions_half) - 0.5);
+    let f = fract(prev_uv * vec2<f32>(dimensions) - 0.5);
     let w = array<f32,4>(
         (1.0 - f.x) * (1.0 - f.y),
         f.x * (1.0 - f.y),
@@ -216,14 +214,14 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
         let offset = OFFSETS[i];
 
         let sample_pos = prev_origin + offset;
-        if any(sample_pos < vec2(0)) || any(sample_pos >= dimensions_half) {
+        if any(sample_pos < vec2(0)) || any(sample_pos >= dimensions) {
             continue;
         }
 
         var valid = false;
-
         for (var j = 0; j < 4; j++) {
             let sample_pos_full = sample_pos * 2 + OFFSETS[j];
+            // let sample_uv = (vec2<f32>(sample_pos) + 0.5) * texel_size_half;
             let sample_uv = (vec2<f32>(sample_pos_full) + 0.5) * texel_size_full;
 
             let sample = gather_surface(sample_uv + prev_jitter, sample_pos_full, true);
@@ -243,6 +241,7 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
             continue;
         }
         valid_count += 1u;
+        // prev_history_len = max(prev_history_len, history_len);
         prev_history_len += history_len;
         prev_sum_r += weight * textureLoad(tex_prev_sh_r, sample_pos);
         prev_sum_g += weight * textureLoad(tex_prev_sh_g, sample_pos);
@@ -256,6 +255,7 @@ fn reproject(cur_half_pos: vec2<i32>) -> ReprojectResult {
     var res: ReprojectResult;
     res.valid = true;
     res.history_len = u32(ceil(f32(prev_history_len) / f32(valid_count)));
+    // res.history_len = prev_history_len;
     res.sh_r = prev_sum_r / weight_sum;
     res.sh_g = prev_sum_g / weight_sum;
     res.sh_b = prev_sum_b / weight_sum;

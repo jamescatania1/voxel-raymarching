@@ -55,8 +55,13 @@ struct Model {
 @group(1) @binding(1) var<uniform> frame: FrameMetadata;
 @group(1) @binding(2) var<uniform> model: Model;
 
+struct Immediates {
+    offset: vec2<f32>,
+}
+var<immediate> immediates: Immediates;
+
 struct ComputeIn {
-    @builtin(global_invocation_id) id: vec3<u32>,
+    // @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>,
     @builtin(num_workgroups) num_workgroups: vec3<u32>,
     @builtin(local_invocation_id) thread_id: vec3<u32>,
@@ -70,8 +75,8 @@ fn compute_main(in: ComputeIn) {
     let light_dir = normalize(model.inv_normal_transform * (-environment.sun_direction));
     let step_dir = vec3<i32>(step(vec3(0.0), light_dir) * 2.0 - 1.0);
 
-    let group_size = max(vec3(2), (scene.size + 3) / 4);
-    let size_padded = group_size * 4;
+    let group_size = max(vec3(2), (scene.size + 7) / 8);
+    let size_padded = group_size * 8;
     let base = vec3<f32>(vec3<u32>(max(-step_dir, vec3(0))) * size_padded);
 
     let face_groups_xy = group_size.x * group_size.y;
@@ -79,21 +84,20 @@ fn compute_main(in: ComputeIn) {
     let face_groups_yz = group_size.y * group_size.z;
 
     let group_index = in.group_id.x + in.group_id.y * in.num_workgroups.x;
-    let thread_offset = in.thread_id.xy / 2;
-    let voxel_offset = (vec2<f32>(in.thread_id.xy & vec2(1u)) + 0.5) * 0.5;
+    let thread_offset = in.thread_id.xy;
 
     var pos: vec3<f32>;
     if group_index < face_groups_xy {
         let id = group_index;
-        let uv = vec2<f32>(vec2(id % group_size.x, id / group_size.x) * 4 + thread_offset) + voxel_offset;
+        let uv = vec2<f32>(vec2(id % group_size.x, id / group_size.x) * 8 + thread_offset) + immediates.offset;
         pos = vec3(uv, base.z);
     } else if group_index < (face_groups_xy + face_groups_xz) {
         let id = group_index - face_groups_xy;
-        let uv = vec2<f32>(vec2(id % group_size.x, id / group_size.x) * 4 + thread_offset) + voxel_offset;
+        let uv = vec2<f32>(vec2(id % group_size.x, id / group_size.x) * 8 + thread_offset) + immediates.offset;
         pos = vec3(uv.x, base.y, uv.y);
     } else {
         let id = group_index - (face_groups_xy + face_groups_xz);
-        let uv = vec2<f32>(vec2(id % group_size.y, id / group_size.y) * 4 + thread_offset) + voxel_offset;
+        let uv = vec2<f32>(vec2(id % group_size.y, id / group_size.y) * 8 + thread_offset) + immediates.offset;
         pos = vec3(base.x, uv);
     }
     if any(vec3<u32>(pos) > size_padded) {
@@ -104,6 +108,44 @@ fn compute_main(in: ComputeIn) {
     ray.origin = pos;
     ray.direction = light_dir;
     raymarch(ray, in.local_index);
+
+    // let light_dir = normalize(model.inv_normal_transform * (-environment.sun_direction));
+    // let step_dir = vec3<i32>(step(vec3(0.0), light_dir) * 2.0 - 1.0);
+
+    // let group_size = max(vec3(2), (scene.size + 3) / 4);
+    // let size_padded = group_size * 4;
+    // let base = vec3<f32>(vec3<u32>(max(-step_dir, vec3(0))) * size_padded);
+
+    // let face_groups_xy = group_size.x * group_size.y;
+    // let face_groups_xz = group_size.x * group_size.z;
+    // let face_groups_yz = group_size.y * group_size.z;
+
+    // let group_index = in.group_id.x + in.group_id.y * in.num_workgroups.x;
+    // let thread_offset = in.thread_id.xy / 2;
+    // let voxel_offset = (vec2<f32>(in.thread_id.xy & vec2(1u)) + 0.5) * 0.5;
+
+    // var pos: vec3<f32>;
+    // if group_index < face_groups_xy {
+    //     let id = group_index;
+    //     let uv = vec2<f32>(vec2(id % group_size.x, id / group_size.x) * 4 + thread_offset) + voxel_offset;
+    //     pos = vec3(uv, base.z);
+    // } else if group_index < (face_groups_xy + face_groups_xz) {
+    //     let id = group_index - face_groups_xy;
+    //     let uv = vec2<f32>(vec2(id % group_size.x, id / group_size.x) * 4 + thread_offset) + voxel_offset;
+    //     pos = vec3(uv.x, base.y, uv.y);
+    // } else {
+    //     let id = group_index - (face_groups_xy + face_groups_xz);
+    //     let uv = vec2<f32>(vec2(id % group_size.y, id / group_size.y) * 4 + thread_offset) + voxel_offset;
+    //     pos = vec3(base.x, uv);
+    // }
+    // if any(vec3<u32>(pos) > size_padded) {
+    //     return;
+    // }
+
+    // var ray: Ray;
+    // ray.origin = pos;
+    // ray.direction = light_dir;
+    // raymarch(ray, in.local_index);
 }
 
 struct Ray {

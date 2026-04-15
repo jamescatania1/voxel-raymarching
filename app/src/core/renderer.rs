@@ -82,6 +82,7 @@ pub struct Renderer {
     scene_size: glam::UVec3,
     probe_size: glam::UVec3,
     shadow_update_requested: bool,
+    shadow_occlusion_ttl: u32,
 }
 
 struct Pipelines {
@@ -284,13 +285,13 @@ impl ScreenTextures {
                 .create(device),
             gi_ray_radiance: texture("gi_ray_radiance")
                 .rgba16float()
-                .size(quarter_size)
+                .size(half_size)
                 .d2()
                 .usage(TextureUsages::STORAGE_BINDING)
                 .create(device),
             gi_ray_direction: texture("gi_ray_direction")
                 .rgba16float()
-                .size(quarter_size)
+                .size(half_size)
                 .d2()
                 .usage(TextureUsages::STORAGE_BINDING)
                 .create(device),
@@ -599,6 +600,7 @@ impl Renderer {
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().r32uint().dimension_2d().read_only(),
+                    sampled_texture().float().dimension_2d(),
                 ),
             ),
             ambient_blur_static: device.layout(
@@ -756,6 +758,7 @@ impl Renderer {
         let pipelines = Pipelines {
             shadow_occlusion: device
                 .compute_pipeline("shadow_occlusion", &shaders.shadow_occlusion)
+                .immediate_size(8)
                 .layout(&[
                     &bg_layouts.shadow_occlusion_static,
                     &bg_layouts.per_frame_shared,
@@ -1397,6 +1400,7 @@ impl Renderer {
             scene_size: scene.meta.size,
             probe_size,
             shadow_update_requested: true,
+            shadow_occlusion_ttl: 0,
         };
 
         _self.update_screen_resources(&window, device);
@@ -1519,6 +1523,7 @@ impl Renderer {
                     gi_sh_g.both(),
                     gi_sh_b.both(),
                     gi_history.both(),
+                    depth.both(),
                 ],
             ),
             specular_gbuffer: device.bind_group(
@@ -1782,23 +1787,30 @@ impl Renderer {
         // shadow occlusion pass
         if self.shadow_update_requested {
             self.shadow_update_requested = false;
-
-            // encoder.clear_buffer(&self.buffers.acc_voxel_lighting, 0, None);
+            self.shadow_occlusion_ttl = 64;
             encoder.clear_buffer(&self.buffers.voxel_shadow_mask, 0, None);
-            // let mut pass = encoder.begin_compute_pass_timed("Shadow Occlusion", &mut self.timing);
+        }
+        if self.shadow_occlusion_ttl > 0 {
+            self.shadow_occlusion_ttl -= 1;
+
             let mut pass = encoder.begin_compute_pass(&Default::default());
 
             pass.set_pipeline(&self.pipelines.shadow_occlusion);
             pass.set_bind_group(0, &self.bind_groups.shadow_occlusion_static, &[]);
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
+            let frame_index = 64 - self.shadow_occlusion_ttl;
+            pass.set_immediates(
+                0,
+                &bytemuck::cast_slice(&[noise::HALTON_64[(frame_index as usize) & 63]]),
+            );
+
             pass.insert_debug_marker("shadow occlusion");
 
             let group_size = self.scene_size.map(|x| x.div_ceil(8).max(2));
-            let group_count = 4
-                * (group_size.x * group_size.y
-                    + group_size.x * group_size.z
-                    + group_size.y * group_size.z);
+            let group_count = group_size.x * group_size.y
+                + group_size.x * group_size.z
+                + group_size.y * group_size.z;
             let wg_x = group_count.min(65535);
             let wg_y = group_count.div_ceil(wg_x);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -1870,7 +1882,7 @@ impl Renderer {
             pass.set_bind_group(2, &self.bind_groups.ambient_trace_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
-            let size_quarter = self.size.map(|x| x.div_ceil(4));
+            let size_quarter = self.size.map(|x| x.div_ceil(2));
 
             pass.insert_debug_marker("ambient trace");
             pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);

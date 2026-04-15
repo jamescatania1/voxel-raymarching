@@ -243,7 +243,7 @@ impl DebugWindow {
                 ui.label("Ambient Filter Scale");
                 ui.add(egui::Slider::new(
                     &mut config.ambient_filter_scale,
-                    0.0..=20.0,
+                    0.0..=100.0,
                 ));
             });
         });

@@ -18,8 +18,8 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
-    let sample_base = (pos * 2 + 1) / 4;
-    let quarter_dimensions = textureDimensions(tex_ray_radiance).xy;
+    // let sample_base = (pos * ;
+    // let quarter_dimensions = textureDimensions(tex_ray_radiance).xy;
 
     var sh_r = vec4(0.0);
     var sh_g = vec4(0.0);
@@ -28,8 +28,8 @@ fn compute_main(in: ComputeIn) {
 
     for (var dy = -1; dy <= 1; dy++) {
         for (var dx = -1; dx <= 1; dx++) {
-            let sample_pos = sample_base + vec2(dx, dy);
-            if any(sample_pos < vec2(0)) || any(sample_pos >= vec2<i32>(quarter_dimensions)) {
+            let sample_pos = pos + vec2(dx, dy);
+            if any(sample_pos < vec2(0)) || any(sample_pos >= vec2<i32>(dimensions)) {
                 continue;
             }
 

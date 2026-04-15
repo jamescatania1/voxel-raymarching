@@ -6,6 +6,7 @@
 @group(1) @binding(1) var tex_out_sh_g: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(2) var tex_out_sh_b: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(3) var tex_history_len: texture_storage_2d<r32uint, read>;
+@group(1) @binding(4) var tex_depth: texture_2d<f32>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var tex_noise: texture_3d<f32>;
@@ -68,6 +69,16 @@ const POISSON_KERNEL: array<vec2<f32>, 8> = array(
     vec2(0.787, -0.239),
 );
 
+const OFFSETS: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
+    vec2<i32>(0, 0),
+    vec2<i32>(1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(1, 1),
+);
+
+// based on fast denoising w/ self stabilizing recurrent blurs,
+// see https://developer.nvidia.com/gtc/2020/video/s22699-vid
+
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let pos = vec2<i32>(in.id.xy);
@@ -76,13 +87,30 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
+    var is_sky = true;
+    var cur_depth = 9999999.0;
+    for (var i = 0u; i < 4u; i++) {
+        let depth = textureLoad(tex_depth, pos * 2 + OFFSETS[i], 0).r;
+        if depth > 0.0 {
+            is_sky = false;
+            cur_depth = min(cur_depth, depth);
+        }
+    }
+    if is_sky {
+        return;
+    }
+
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 
     let history_length = textureLoad(tex_history_len, pos).r;
 
+    // clamped how small the kernel can shrink
+    // looks better in my case, might revisit though
+    var history_weight = 1.0 / (1.0 + min(f32(history_length) * 0.25, 8.0));
+
     var radius = texel_size * environment.ambient_filter_scale;
-    radius /= 2.0 + min(f32(history_length), 32.0);
+    radius *= history_weight;
 
     let noise = textureLoad(tex_noise, vec3(in.id.xy % vec2(128), frame.frame_id % 64), 0).r;
     let t = noise * 2.0 * PI;
@@ -106,7 +134,14 @@ fn compute_main(in: ComputeIn) {
             continue;
         }
 
-        let w = 1.0;
+        var w = 1.0;
+
+        let depths = textureGather(0, tex_depth, sampler_linear, sample_uv);
+        let diffs = abs(depths - cur_depth);
+        var depth_weight = min(min(min(diffs.x, diffs.y), diffs.z), diffs.w);
+        depth_weight = saturate(1.0 - depth_weight * 50.0);
+
+        // w *= depth_weight;
 
         weight += w;
         sh_r += w * textureSampleLevel(tex_sh_r, sampler_linear, sample_uv, 0.0);

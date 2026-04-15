@@ -34,6 +34,7 @@ impl App {
         let mut features = wgpu::Features::default();
         features |= wgpu::Features::FLOAT32_FILTERABLE;
         features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        features |= wgpu::Features::IMMEDIATES;
         if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             features |= wgpu::Features::TIMESTAMP_QUERY;
         }
@@ -41,6 +42,7 @@ impl App {
         let mut limits = wgpu::Limits::default();
         limits.max_storage_buffer_binding_size = 512 * 1024 * 1024;
         limits.max_storage_textures_per_shader_stage = 12;
+        limits.max_immediate_size = 32;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
