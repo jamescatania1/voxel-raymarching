@@ -2,7 +2,12 @@
 
 use std::num::NonZero;
 
-use wgpu::ShaderStages;
+use wgpu::{BindGroupEntry, BindingResource, ShaderStages};
+
+use crate::textures::{
+    DeviceSwapExt, SwapchainBindGroup, SwapchainBindGroupDescriptor, SwapchainBindGroupEntry,
+    SwapchainBindingResource,
+};
 
 pub trait DeviceUtils {
     fn layout(
@@ -11,6 +16,18 @@ pub trait DeviceUtils {
         visibility: ShaderStages,
         entries: impl IntoEntries,
     ) -> wgpu::BindGroupLayout;
+    fn bind_group<const N: usize>(
+        &self,
+        label: &str,
+        layout: &wgpu::BindGroupLayout,
+        entries: [BindingResource; N],
+    ) -> wgpu::BindGroup;
+    fn bind_group_swap<const N: usize>(
+        &self,
+        label: &str,
+        layout: &wgpu::BindGroupLayout,
+        entries: [SwapchainBindingResource; N],
+    ) -> SwapchainBindGroup;
 }
 impl DeviceUtils for wgpu::Device {
     fn layout(
@@ -23,6 +40,60 @@ impl DeviceUtils for wgpu::Device {
             label: Some(label),
             entries: &entries.into_entries(visibility),
         })
+    }
+
+    fn bind_group<const N: usize>(
+        &self,
+        label: &str,
+        layout: &wgpu::BindGroupLayout,
+        entries: [BindingResource; N],
+    ) -> wgpu::BindGroup {
+        let mut entries = entries.map(|e| BindGroupEntry {
+            binding: 0,
+            resource: e,
+        });
+        for i in 0..N {
+            entries[i].binding = i as u32;
+        }
+        self.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout,
+            entries: &entries,
+        })
+    }
+
+    fn bind_group_swap<const N: usize>(
+        &self,
+        label: &str,
+        layout: &wgpu::BindGroupLayout,
+        entries: [SwapchainBindingResource; N],
+    ) -> SwapchainBindGroup {
+        let mut entries = entries.map(|e| SwapchainBindGroupEntry {
+            binding: 0,
+            resource: e,
+        });
+        for i in 0..N {
+            entries[i].binding = i as u32;
+        }
+        self.create_bind_group_swap(&SwapchainBindGroupDescriptor {
+            label: Some(label),
+            layout,
+            entries: &entries,
+        })
+    }
+}
+
+pub trait BindingResourceExt {
+    fn as_binding(&self) -> wgpu::BindingResource<'_>;
+}
+impl BindingResourceExt for wgpu::Sampler {
+    fn as_binding(&self) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Sampler(self)
+    }
+}
+impl BindingResourceExt for wgpu::Buffer {
+    fn as_binding(&self) -> wgpu::BindingResource<'_> {
+        self.as_entire_binding()
     }
 }
 

@@ -1,7 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use ddsfile::Dds;
-use wgpu::{ShaderStages, util::DeviceExt};
+use image::buffer;
+use wgpu::{ShaderStages, Texture, TextureUsages, util::DeviceExt};
 
 use crate::{
     SizedWindow,
@@ -23,10 +24,8 @@ use utils::{
     define_shaders,
     layout::{DeviceUtils, *},
     pipeline::PipelineUtils,
-    textures::{
-        DeviceSwapExt, PassSwapExt, SwapchainBindGroup, SwapchainBindGroupDescriptor,
-        SwapchainBindGroupEntry, SwapchainBindingResource, SwapchainTexture,
-    },
+    texture::{TextureDescriptorExt, TextureExt, TextureViewExt, texture},
+    textures::{PassSwapExt, SwapchainBindGroup, SwapchainBindingResource, SwapchainTexture},
 };
 
 define_shaders! {
@@ -35,15 +34,18 @@ define_shaders! {
     probe_border "../shaders/probe_border.wgsl",
     probe_visualize "../shaders/probe_visualize.wgsl",
     raymarch "../shaders/raymarch.wgsl",
+    ambient_trace "../shaders/ambient_trace.wgsl",
+    ambient_project "../shaders/ambient_project.wgsl",
+    ambient_reproject "../shaders/ambient_reproject.wgsl",
+    ambient_blur "../shaders/ambient_blur.wgsl",
     visible_indirect_args "../shaders/visible_indirect_args.wgsl",
     shadow "../shaders/shadow.wgsl",
     ambient "../shaders/ambient.wgsl",
+    resolve "../shaders/resolve.wgsl",
+    chunk_resolve "../shaders/chunk_resolve.wgsl",
     specular "../shaders/specular.wgsl",
-    lighting_resolve "../shaders/lighting_resolve.wgsl",
     specular_spatial "../shaders/specular_spatial.wgsl",
     specular_resolve "../shaders/specular_resolve.wgsl",
-    resolve "../shaders/resolve.wgsl",
-    atrous "../shaders/atrous.wgsl",
     deferred "../shaders/deferred.wgsl",
     taa "../shaders/taa.wgsl",
     fx "../shaders/fx.wgsl",
@@ -65,9 +67,11 @@ pub struct Renderer {
     pipelines: Pipelines,
     bg_layouts: BindGroupLayouts,
     bind_groups: BindGroups,
-    textures: Textures,
+    screen_bind_groups: Option<ScreenBindGroups>,
     samplers: Samplers,
     buffers: Buffers,
+    textures: Textures,
+    screen_textures: Option<ScreenTextures>,
     timing: Option<RenderTimer>,
     quad: Quad,
     frame_id: u32,
@@ -78,6 +82,7 @@ pub struct Renderer {
     scene_size: glam::UVec3,
     probe_size: glam::UVec3,
     shadow_update_requested: bool,
+    shadow_occlusion_ttl: u32,
 }
 
 struct Pipelines {
@@ -86,11 +91,16 @@ struct Pipelines {
     probe_update: wgpu::ComputePipeline,
     probe_border: wgpu::ComputePipeline,
     raymarch: wgpu::ComputePipeline,
+    ambient_trace: wgpu::ComputePipeline,
+    ambient_project: wgpu::ComputePipeline,
+    ambient_reproject: wgpu::ComputePipeline,
+    ambient_blur: wgpu::ComputePipeline,
     voxel_indirect_args: wgpu::ComputePipeline,
     chunk_indirect_args: wgpu::ComputePipeline,
     shadow: wgpu::ComputePipeline,
     ambient: wgpu::ComputePipeline,
     resolve: wgpu::ComputePipeline,
+    chunk_resolve: wgpu::ComputePipeline,
     specular: wgpu::ComputePipeline,
     specular_spatial: wgpu::ComputePipeline,
     specular_resolve: wgpu::ComputePipeline,
@@ -113,6 +123,15 @@ struct BindGroupLayouts {
     shadow_static: wgpu::BindGroupLayout,
     ambient_static: wgpu::BindGroupLayout,
     resolve: wgpu::BindGroupLayout,
+    chunk_resolve_static: wgpu::BindGroupLayout,
+    ambient_trace_gbuffer: wgpu::BindGroupLayout,
+    ambient_trace_static: wgpu::BindGroupLayout,
+    ambient_project_gbuffer: wgpu::BindGroupLayout,
+    ambient_reproject_gbuffer: wgpu::BindGroupLayout,
+    ambient_reproject_swap: wgpu::BindGroupLayout,
+    ambient_blur_gbuffer: wgpu::BindGroupLayout,
+    ambient_blur_swap: wgpu::BindGroupLayout,
+    ambient_blur_static: wgpu::BindGroupLayout,
     specular_gbuffer: wgpu::BindGroupLayout,
     specular_swap: wgpu::BindGroupLayout,
     specular_static: wgpu::BindGroupLayout,
@@ -132,48 +151,40 @@ struct BindGroups {
     per_frame_shared: wgpu::BindGroup,
     shadow_occlusion_static: wgpu::BindGroup,
     probe_trace_static: wgpu::BindGroup,
-    probe_visualize_swap: Option<SwapchainBindGroup>,
     probe_update_static: wgpu::BindGroup,
-    raymarch_gbuffer: Option<wgpu::BindGroup>,
-    raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
     voxel_indirect_args: wgpu::BindGroup,
     chunk_indirect_args: wgpu::BindGroup,
     shadow_static: wgpu::BindGroup,
     ambient_static: wgpu::BindGroup,
     resolve: wgpu::BindGroup,
-    specular_gbuffer: Option<wgpu::BindGroup>,
-    specular_swap: Option<SwapchainBindGroup>,
+    chunk_resolve_static: wgpu::BindGroup,
+    ambient_trace_static: wgpu::BindGroup,
+    ambient_blur_static: wgpu::BindGroup,
     specular_static: wgpu::BindGroup,
-    spec_spatial_gbuffer: Option<wgpu::BindGroup>,
-    spec_resolve_gbuffer: Option<wgpu::BindGroup>,
-    spec_resolve_swap: Option<SwapchainBindGroup>,
-    deferred_gbuffer: Option<wgpu::BindGroup>,
-    deferred_swap: Option<SwapchainBindGroup>,
     deferred_static: wgpu::BindGroup,
-    taa_input: Option<wgpu::BindGroup>,
-    taa_swap: Option<SwapchainBindGroup>,
     fx_settings: wgpu::BindGroup,
-    fx_input_swap: Option<SwapchainBindGroup>,
 }
-
-struct Textures {
-    probe_irradiance: wgpu::Texture,
-    probe_depth: wgpu::Texture,
-    probe_ray_results: wgpu::Texture,
-    gbuffer_albedo: Option<wgpu::Texture>,
-    gbuffer_voxel_id: Option<wgpu::Texture>,
-    gbuffer_normal: Option<SwapchainTexture>,
-    gbuffer_depth: Option<SwapchainTexture>,
-    gbuffer_velocity: Option<wgpu::Texture>,
-    gbuffer_specular: Option<wgpu::Texture>,
-    gbuffer_specular_dir_pdf: Option<wgpu::Texture>,
-    gbuffer_specular_spatial: Option<wgpu::Texture>,
-    gbuffer_acc_specular: Option<SwapchainTexture>,
-    deferred_output: Option<wgpu::Texture>,
-    out_color: Option<SwapchainTexture>,
-    noise_coshemi: wgpu::Texture,
-    tonemap_mcmapface_lut: wgpu::Texture,
+struct ScreenBindGroups {
+    probe_visualize_swap: SwapchainBindGroup,
+    raymarch_gbuffer: wgpu::BindGroup,
+    raymarch_swap: SwapchainBindGroup,
+    ambient_trace_gbuffer: wgpu::BindGroup,
+    ambient_project_gbuffer: wgpu::BindGroup,
+    ambient_reproject_gbuffer: wgpu::BindGroup,
+    ambient_reproject_swap: SwapchainBindGroup,
+    ambient_blur_gbuffer: wgpu::BindGroup,
+    ambient_blur_swap: SwapchainBindGroup,
+    specular_gbuffer: wgpu::BindGroup,
+    specular_swap: SwapchainBindGroup,
+    spec_spatial_gbuffer: wgpu::BindGroup,
+    spec_resolve_gbuffer: wgpu::BindGroup,
+    spec_resolve_swap: SwapchainBindGroup,
+    deferred_gbuffer: wgpu::BindGroup,
+    deferred_swap: SwapchainBindGroup,
+    taa_input: wgpu::BindGroup,
+    taa_swap: SwapchainBindGroup,
+    fx_input_swap: SwapchainBindGroup,
 }
 
 struct Samplers {
@@ -205,6 +216,164 @@ struct Buffers {
     model: wgpu::Buffer,
 }
 
+struct Textures {
+    probe_irradiance: wgpu::Texture,
+    probe_depth: wgpu::Texture,
+    probe_ray_results: wgpu::Texture,
+    noise_coshemi: wgpu::Texture,
+    noise_scalar: wgpu::Texture,
+    tonemap_mcmapface_lut: wgpu::Texture,
+}
+struct ScreenTextures {
+    albedo: Texture,
+    voxel_id: Texture,
+    normal: SwapchainTexture,
+    depth: SwapchainTexture,
+    velocity: Texture,
+    gi_ray_radiance: Texture,
+    gi_ray_direction: Texture,
+    gi_sh_sample_rgb: [Texture; 3],
+    gi_sh_reprojection_rgb: [Texture; 3],
+    gi_sh_rgb: [SwapchainTexture; 3],
+    gi_history: SwapchainTexture,
+    specular: Texture,
+    specular_direction: Texture,
+    specular_spatial: Texture,
+    acc_specular: SwapchainTexture,
+    deferred_output: Texture,
+    out_color: SwapchainTexture,
+}
+
+impl ScreenTextures {
+    fn create(device: &wgpu::Device, screen_size: glam::UVec2) -> Self {
+        use wgpu::TextureUsages;
+
+        let size = screen_size.extend(1);
+        let half_size = size.map(|x| x.div_ceil(2));
+        let quarter_size = size.map(|x| x.div_ceil(4));
+
+        Self {
+            albedo: texture("albedo")
+                .rgba16float()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                .create(device),
+            voxel_id: texture("voxel_id")
+                .r32uint()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                .create(device),
+            normal: texture("normal")
+                .r32uint()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                .create_swap(device),
+            depth: texture("depth")
+                .r32float()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                .create_swap(device),
+            velocity: texture("velocity")
+                .rgba16float()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                .create(device),
+            gi_ray_radiance: texture("gi_ray_radiance")
+                .rgba16float()
+                .size(half_size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create(device),
+            gi_ray_direction: texture("gi_ray_direction")
+                .rgba16float()
+                .size(half_size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create(device),
+            gi_sh_sample_rgb: ["gi_sh_sample_r", "gi_sh_sample_g", "gi_sh_sample_b"].map(|l| {
+                texture(l)
+                    .rgba16float()
+                    .size(half_size)
+                    .d2()
+                    .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                    .create(device)
+            }),
+            gi_sh_rgb: ["gi_sh_r", "gi_sh_g", "gi_sh_b"].map(|l| {
+                texture(l)
+                    .rgba16float()
+                    .size(half_size)
+                    .d2()
+                    .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                    .create_swap(device)
+            }),
+            gi_sh_reprojection_rgb: [
+                "gi_sh_reprojection_r",
+                "gi_sh_reprojection_g",
+                "gi_sh_reprojection_b",
+            ]
+            .map(|l| {
+                texture(l)
+                    .rgba16float()
+                    .size(half_size)
+                    .d2()
+                    .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                    .create(device)
+            }),
+            gi_history: texture("gi_history")
+                .r32uint()
+                .size(half_size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create_swap(device),
+            specular: texture("specular")
+                .rgba16float()
+                .size(half_size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create(device),
+            specular_direction: texture("specular_direction")
+                .rgba16float()
+                .size(half_size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create(device),
+            specular_spatial: texture("specular_spatial")
+                .rgba16float()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create(device),
+            acc_specular: texture("acc_specular")
+                .rgba16float()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create_swap(device),
+            deferred_output: texture("deferred_output")
+                .rgba16float()
+                .size(size)
+                .d2()
+                .usage(
+                    TextureUsages::STORAGE_BINDING
+                        | TextureUsages::TEXTURE_BINDING
+                        | TextureUsages::RENDER_ATTACHMENT,
+                )
+                .create(device),
+            out_color: texture("out_color")
+                .rgba16float()
+                .size(size)
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
+                .create_swap(device),
+        }
+    }
+}
+
 impl Renderer {
     pub fn new(
         window: Arc<winit::window::Window>,
@@ -230,9 +399,9 @@ impl Renderer {
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     sampler().filtering(),
-                    texture().float().dimension_cube(),
-                    texture().float().dimension_2d(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_cube(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_buffer().read_only(),
                 ),
@@ -243,7 +412,7 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_write(),
-                    storage_texture().rg16float().dimension_2d().read_write(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
                 ),
             ),
             probe_visualize_swap: device.layout(
@@ -251,7 +420,7 @@ impl Renderer {
                 ShaderStages::VERTEX_FRAGMENT,
                 (
                     uniform_buffer(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                     storage_buffer().read_only(),
                 ),
             ),
@@ -280,7 +449,7 @@ impl Renderer {
                     uniform_buffer(),
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
-                    texture().unfilterable_float().dimension_3d(),
+                    sampled_texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
                     storage_buffer().read_write(),
                     storage_buffer().read_write(),
@@ -298,7 +467,7 @@ impl Renderer {
                 (
                     uniform_buffer(),
                     storage_buffer().read_only(),
-                    texture().unfilterable_float().dimension_3d(),
+                    sampled_texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
@@ -317,17 +486,26 @@ impl Renderer {
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
-                    texture().unfilterable_float().dimension_3d(),
+                    sampled_texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
                     sampler().filtering(),
-                    texture().float().dimension_cube(),
+                    sampled_texture().float().dimension_cube(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
-                    texture().float().dimension_2d(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                     storage_buffer().read_only(),
+                ),
+            ),
+            chunk_resolve_static: device.layout(
+                "chunk_resolve_static",
+                ShaderStages::COMPUTE,
+                (
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_write(),
                 ),
             ),
             resolve: device.layout(
@@ -340,6 +518,97 @@ impl Renderer {
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                ),
+            ),
+            ambient_trace_gbuffer: device.layout(
+                "ambient_trace_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                ),
+            ),
+            ambient_trace_static: device.layout(
+                "ambient_trace_static",
+                ShaderStages::COMPUTE,
+                (
+                    uniform_buffer(),
+                    uniform_buffer(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                    sampled_texture().unfilterable_float().dimension_3d(),
+                    sampler().filtering(),
+                    sampled_texture().float().dimension_cube(),
+                    storage_buffer().read_only(),
+                ),
+            ),
+            ambient_project_gbuffer: device.layout(
+                "ambient_project_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                ),
+            ),
+            ambient_reproject_gbuffer: device.layout(
+                "ambient_reproject_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
+                    storage_texture().rgba16float().dimension_2d().read_write(),
+                ),
+            ),
+            ambient_reproject_swap: device.layout(
+                "ambient_reproject_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().r32uint().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                ),
+            ),
+            ambient_blur_gbuffer: device.layout(
+                "ambient_blur_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                ),
+            ),
+            ambient_blur_swap: device.layout(
+                "ambient_blur_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    sampled_texture().float().dimension_2d(),
+                ),
+            ),
+            ambient_blur_static: device.layout(
+                "ambient_blur_static",
+                ShaderStages::COMPUTE,
+                (
+                    sampler().filtering(),
+                    sampled_texture().unfilterable_float().dimension_3d(),
                 ),
             ),
             specular_gbuffer: device.layout(
@@ -348,7 +617,6 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
-                    // storage_texture().rgba16float().dimension_2d().write_only(),
                 ),
             ),
             specular_swap: device.layout(
@@ -367,10 +635,10 @@ impl Renderer {
                     uniform_buffer(),
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
-                    texture().unfilterable_float().dimension_3d(),
+                    sampled_texture().unfilterable_float().dimension_3d(),
                     sampler().non_filtering(),
                     sampler().filtering(),
-                    texture().float().dimension_cube(),
+                    sampled_texture().float().dimension_cube(),
                     storage_buffer().read_only(),
                 ),
             ),
@@ -422,6 +690,10 @@ impl Renderer {
                     storage_texture().r32uint().dimension_2d().read_only(),
                     storage_texture().r32float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
                 ),
             ),
             deferred_static: device.layout(
@@ -430,15 +702,15 @@ impl Renderer {
                 (
                     sampler().filtering(),
                     sampler().non_filtering(),
-                    texture().float().dimension_cube(),
-                    texture().float().dimension_cube(),
-                    texture().float().dimension_cube(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_cube(),
+                    sampled_texture().float().dimension_cube(),
+                    sampled_texture().float().dimension_cube(),
+                    sampled_texture().float().dimension_2d(),
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     uniform_buffer(),
-                    texture().float().dimension_2d(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                     storage_buffer().read_only(),
                 ),
             ),
@@ -448,16 +720,16 @@ impl Renderer {
                 (
                     sampler().filtering(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                 ),
             ),
             taa_output: device.layout(
                 "taa_output",
                 ShaderStages::COMPUTE,
                 (
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                 ),
             ),
             fx_settings: device.layout("fx_settings", ShaderStages::FRAGMENT, uniform_buffer()),
@@ -465,9 +737,9 @@ impl Renderer {
                 "fx_input",
                 ShaderStages::FRAGMENT,
                 (
-                    texture().float().dimension_2d(),
+                    sampled_texture().float().dimension_2d(),
                     sampler().filtering(),
-                    texture().float().dimension_3d(),
+                    sampled_texture().float().dimension_3d(),
                 ),
             ),
             shadow_occlusion_static: device.layout(
@@ -486,6 +758,7 @@ impl Renderer {
         let pipelines = Pipelines {
             shadow_occlusion: device
                 .compute_pipeline("shadow_occlusion", &shaders.shadow_occlusion)
+                .immediate_size(8)
                 .layout(&[
                     &bg_layouts.shadow_occlusion_static,
                     &bg_layouts.per_frame_shared,
@@ -524,9 +797,41 @@ impl Renderer {
             ambient: device
                 .compute_pipeline("ambient", &shaders.ambient)
                 .layout(&[&bg_layouts.ambient_static, &bg_layouts.per_frame_shared]),
+            chunk_resolve: device
+                .compute_pipeline("chunk_resolve", &shaders.chunk_resolve)
+                .layout(&[
+                    &bg_layouts.chunk_resolve_static,
+                    &bg_layouts.per_frame_shared,
+                ]),
             resolve: device
                 .compute_pipeline("resolve", &shaders.resolve)
                 .layout(&[&bg_layouts.resolve, &bg_layouts.per_frame_shared]),
+            ambient_trace: device
+                .compute_pipeline("ambient_trace", &shaders.ambient_trace)
+                .layout(&[
+                    &bg_layouts.ambient_trace_gbuffer,
+                    &bg_layouts.specular_swap,
+                    &bg_layouts.ambient_trace_static,
+                    &bg_layouts.per_frame_shared,
+                ]),
+            ambient_project: device
+                .compute_pipeline("ambient_project", &shaders.ambient_project)
+                .layout(&[&bg_layouts.ambient_project_gbuffer]),
+            ambient_reproject: device
+                .compute_pipeline("ambient_reproject", &shaders.ambient_reproject)
+                .layout(&[
+                    &bg_layouts.ambient_reproject_gbuffer,
+                    &bg_layouts.ambient_reproject_swap,
+                    &bg_layouts.per_frame_shared,
+                ]),
+            ambient_blur: device
+                .compute_pipeline("ambient_blur", &shaders.ambient_blur)
+                .layout(&[
+                    &bg_layouts.ambient_blur_gbuffer,
+                    &bg_layouts.ambient_blur_swap,
+                    &bg_layouts.ambient_blur_static,
+                    &bg_layouts.per_frame_shared,
+                ]),
             specular: device
                 .compute_pipeline("specular", &shaders.specular)
                 .layout(&[
@@ -653,60 +958,26 @@ impl Renderer {
         let probes = ProbeGrid::new(scene.meta.size, config.irradiance_probe_scale, &tree);
 
         let textures = Textures {
-            probe_irradiance: device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("probe_irradiance"),
-                size: wgpu::Extent3d {
-                    width: 2048,
-                    height: probe_count.div_ceil(256) * 8,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
-            }),
-            probe_depth: device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("probe_depth"),
-                size: wgpu::Extent3d {
-                    width: 2048,
-                    height: probe_count.div_ceil(128) * 16,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rg16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
-            }),
-            probe_ray_results: device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("probe_ray_results"),
-                size: wgpu::Extent3d {
-                    width: 2048,
-                    height: probe_count.div_ceil(128) * 8,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
-            }),
-            gbuffer_albedo: None,
-            gbuffer_voxel_id: None,
-            gbuffer_normal: None,
-            gbuffer_depth: None,
-            gbuffer_velocity: None,
-            gbuffer_specular: None,
-            gbuffer_specular_dir_pdf: None,
-            gbuffer_specular_spatial: None,
-            gbuffer_acc_specular: None,
-            deferred_output: None,
-            out_color: None,
+            probe_irradiance: texture("probe_irradiance")
+                .rgba16float()
+                .size(glam::uvec3(2048, probe_count.div_ceil(256) * 8, 1))
+                .d2()
+                .usage(TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING)
+                .create(device),
+            probe_depth: texture("probe_depth")
+                .rgba16float()
+                .size(glam::uvec3(2048, probe_count.div_ceil(128) * 16, 1))
+                .d2()
+                .usage(TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING)
+                .create(device),
+            probe_ray_results: texture("probe_ray_results")
+                .rgba16float()
+                .size(glam::uvec3(2048, probe_count.div_ceil(128) * 8, 1))
+                .d2()
+                .usage(TextureUsages::STORAGE_BINDING)
+                .create(device),
             noise_coshemi: noise::noise_stbn_coshemi(device, queue).unwrap(),
+            noise_scalar: noise::noise_stbn_scalar(device, queue).unwrap(),
             tonemap_mcmapface_lut: load_tonemap_lut(device, queue).unwrap(),
         };
 
@@ -878,529 +1149,225 @@ impl Renderer {
             &textures.probe_depth.size()
         );
 
+        let view_skybox_downsampled =
+            skybox
+                .downsampled
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("skybox_downsampled"),
+                    dimension: Some(wgpu::TextureViewDimension::Cube),
+                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                    ..Default::default()
+                });
+        let view_skybox = skybox.cubemap.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("skybox"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            ..Default::default()
+        });
+        let view_skybox_prefilter = skybox.prefilter.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("skybox_prefilter"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            ..Default::default()
+        });
+
         let bind_groups = BindGroups {
-            per_frame_shared: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("per_frame_shared"),
-                layout: &bg_layouts.per_frame_shared,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.environment.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.frame_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.model.as_entire_binding(),
-                    },
+            per_frame_shared: device.bind_group(
+                "per_frame_shared",
+                &bg_layouts.per_frame_shared,
+                [
+                    buffers.environment.as_binding(),
+                    buffers.frame_metadata.as_binding(),
+                    buffers.model.as_binding(),
                 ],
-            }),
-            probe_trace_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("probe_trace_static"),
-                layout: &bg_layouts.probe_trace_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_palette.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.voxel_leaf_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.voxel_shadow_mask.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&samplers.linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::TextureView(
-                            &skybox
-                                .downsampled
-                                .create_view(&wgpu::TextureViewDescriptor {
-                                    label: Some("skybox_downsampled"),
-                                    dimension: Some(wgpu::TextureViewDimension::Cube),
-                                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                    ..Default::default()
-                                }),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_irradiance.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_depth.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 9,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_ray_results.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 10,
-                        resource: buffers.probes.as_entire_binding(),
-                    },
+            ),
+            probe_trace_static: device.bind_group(
+                "probe_trace_static",
+                &bg_layouts.probe_trace_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_palette.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_leaf_chunks.as_binding(),
+                    buffers.voxel_shadow_mask.as_binding(),
+                    samplers.linear.as_binding(),
+                    view_skybox_downsampled.as_binding(),
+                    textures.probe_irradiance.view().as_binding(),
+                    textures.probe_depth.view().as_binding(),
+                    textures.probe_ray_results.view().as_binding(),
+                    buffers.probes.as_binding(),
                 ],
-            }),
-            probe_update_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("probe_update_static"),
-                layout: &bg_layouts.probe_update_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_ray_results.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_irradiance.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_depth.create_view(&Default::default()),
-                        ),
-                    },
+            ),
+            probe_update_static: device.bind_group(
+                "probe_update_static",
+                &bg_layouts.probe_update_static,
+                [
+                    textures.probe_ray_results.view().as_binding(),
+                    textures.probe_irradiance.view().as_binding(),
+                    textures.probe_depth.view().as_binding(),
                 ],
-            }),
-            probe_visualize_swap: None,
-            raymarch_gbuffer: None,
-            raymarch_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("raymarch_static"),
-                layout: &bg_layouts.raymarch_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_palette.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.voxel_leaf_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_coshemi.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: buffers.visibility_info.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: buffers.voxel_map.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: buffers.visible_voxels.as_entire_binding(),
-                    },
+            ),
+            raymarch_static: device.bind_group(
+                "raymarch_static",
+                &bg_layouts.raymarch_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_palette.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_leaf_chunks.as_binding(),
+                    textures.noise_coshemi.view().as_binding(),
+                    samplers.nearest_repeat.as_binding(),
+                    buffers.visibility_info.as_binding(),
+                    buffers.voxel_map.as_binding(),
+                    buffers.visible_voxels.as_binding(),
                 ],
-            }),
-            raymarch_swap: None,
-            voxel_indirect_args: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("voxel_indirect_args"),
-                layout: &bg_layouts.visible_indirect_args,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.visibility_info.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_indirect_args.as_entire_binding(),
-                    },
+            ),
+            voxel_indirect_args: device.bind_group(
+                "voxel_indirect_args",
+                &bg_layouts.visible_indirect_args,
+                [
+                    buffers.visibility_info.as_binding(),
+                    buffers.voxel_indirect_args.as_binding(),
                 ],
-            }),
-            chunk_indirect_args: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("chunk_indirect_args"),
-                layout: &bg_layouts.visible_indirect_args,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.visibility_info.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.chunk_indirect_args.as_entire_binding(),
-                    },
+            ),
+            chunk_indirect_args: device.bind_group(
+                "chunk_indirect_args",
+                &bg_layouts.visible_indirect_args,
+                [
+                    buffers.visibility_info.as_binding(),
+                    buffers.chunk_indirect_args.as_binding(),
                 ],
-            }),
-            shadow_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("shadow_static"),
-                layout: &bg_layouts.shadow_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_coshemi.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.visible_voxels.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: buffers.visibility_info.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: buffers.chunk_visibility_mask.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: buffers.visible_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 9,
-                        resource: buffers.cur_chunk_lighting.as_entire_binding(),
-                    },
+            ),
+            shadow_static: device.bind_group(
+                "shadow_static",
+                &bg_layouts.shadow_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    textures.noise_coshemi.view().as_binding(),
+                    samplers.nearest_repeat.as_binding(),
+                    buffers.visible_voxels.as_binding(),
+                    buffers.cur_voxel_lighting.as_binding(),
+                    buffers.visibility_info.as_binding(),
+                    buffers.chunk_visibility_mask.as_binding(),
+                    buffers.visible_chunks.as_binding(),
+                    buffers.cur_chunk_lighting.as_binding(),
                 ],
-            }),
-            ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ambient_static"),
-                layout: &bg_layouts.ambient_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_palette.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.voxel_leaf_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.voxel_shadow_mask.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_coshemi.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: wgpu::BindingResource::Sampler(&samplers.linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: wgpu::BindingResource::TextureView(
-                            &skybox
-                                .downsampled
-                                .create_view(&wgpu::TextureViewDescriptor {
-                                    label: Some("skybox_downsampled"),
-                                    dimension: Some(wgpu::TextureViewDimension::Cube),
-                                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                    ..Default::default()
-                                }),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 9,
-                        resource: buffers.visible_voxels.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 10,
-                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 11,
-                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 12,
-                        resource: buffers.cur_chunk_lighting.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 13,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_irradiance.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 14,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_depth.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 15,
-                        resource: buffers.probes.as_entire_binding(),
-                    },
+            ),
+            ambient_static: device.bind_group(
+                "ambient_static",
+                &bg_layouts.ambient_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_palette.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_leaf_chunks.as_binding(),
+                    buffers.voxel_shadow_mask.as_binding(),
+                    textures.noise_coshemi.view().as_binding(),
+                    samplers.nearest_repeat.as_binding(),
+                    samplers.linear.as_binding(),
+                    view_skybox_downsampled.as_binding(),
+                    buffers.visible_voxels.as_binding(),
+                    buffers.cur_voxel_lighting.as_binding(),
+                    buffers.acc_voxel_lighting.as_binding(),
+                    buffers.cur_chunk_lighting.as_binding(),
+                    textures.probe_irradiance.view().as_binding(),
+                    textures.probe_depth.view().as_binding(),
+                    buffers.probes.as_binding(),
                 ],
-            }),
-            resolve: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("resolve_swap"),
-                layout: &bg_layouts.resolve,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_map.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.visible_voxels.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
-                    },
+            ),
+            chunk_resolve_static: device.bind_group(
+                "chunk_resolve_static",
+                &bg_layouts.chunk_resolve_static,
+                [
+                    buffers.visible_chunks.as_binding(),
+                    buffers.cur_chunk_lighting.as_binding(),
+                    buffers.acc_chunk_lighting.as_binding(),
                 ],
-            }),
-            specular_gbuffer: None,
-            specular_swap: None,
-            specular_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("specular_static"),
-                layout: &bg_layouts.specular_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_palette.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.voxel_leaf_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_coshemi.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::Sampler(&samplers.linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: wgpu::BindingResource::TextureView(
-                            &skybox
-                                .downsampled
-                                .create_view(&wgpu::TextureViewDescriptor {
-                                    label: Some("skybox_downsampled"),
-                                    dimension: Some(wgpu::TextureViewDimension::Cube),
-                                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                    ..Default::default()
-                                }),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
-                    },
+            ),
+            resolve: device.bind_group(
+                "resolve_static",
+                &bg_layouts.resolve,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_map.as_binding(),
+                    buffers.visible_voxels.as_binding(),
+                    buffers.cur_voxel_lighting.as_binding(),
+                    buffers.acc_voxel_lighting.as_binding(),
+                    buffers.cur_chunk_lighting.as_binding(),
+                    buffers.acc_chunk_lighting.as_binding(),
                 ],
-            }),
-            spec_spatial_gbuffer: None,
-            spec_resolve_gbuffer: None,
-            spec_resolve_swap: None,
-            deferred_gbuffer: None,
-            deferred_swap: None,
-            deferred_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("deferred_static"),
-                layout: &bg_layouts.deferred_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Sampler(&samplers.linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&skybox.cubemap.create_view(
-                            &wgpu::TextureViewDescriptor {
-                                label: Some("skybox"),
-                                dimension: Some(wgpu::TextureViewDimension::Cube),
-                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                ..Default::default()
-                            },
-                        )),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(
-                            &skybox
-                                .downsampled
-                                .create_view(&wgpu::TextureViewDescriptor {
-                                    label: Some("irradiance"),
-                                    dimension: Some(wgpu::TextureViewDimension::Cube),
-                                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                    ..Default::default()
-                                }),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(
-                            &skybox.prefilter.create_view(&wgpu::TextureViewDescriptor {
-                                label: Some("prefilter"),
-                                dimension: Some(wgpu::TextureViewDimension::Cube),
-                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                ..Default::default()
-                            }),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(&skybox.brdf.create_view(
-                            &wgpu::TextureViewDescriptor {
-                                label: Some("brdf"),
-                                dimension: Some(wgpu::TextureViewDimension::D2),
-                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                                ..Default::default()
-                            },
-                        )),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: buffers.voxel_shadow_mask.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 9,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_irradiance.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 10,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.probe_depth.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 11,
-                        resource: buffers.probes.as_entire_binding(),
-                    },
+            ),
+            ambient_trace_static: device.bind_group(
+                "ambient_trace_static",
+                &bg_layouts.ambient_trace_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_palette.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_leaf_chunks.as_binding(),
+                    textures.noise_coshemi.view().as_binding(),
+                    samplers.linear.as_binding(),
+                    view_skybox_downsampled.as_binding(),
+                    buffers.voxel_shadow_mask.as_binding(),
                 ],
-            }),
-            taa_input: None,
-            taa_swap: None,
-            fx_settings: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("fx_settings"),
-                layout: &bg_layouts.fx_settings,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffers.fx_settings.as_entire_binding(),
-                }],
-            }),
-            fx_input_swap: None,
-            shadow_occlusion_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("shadow_occlusion_static"),
-                layout: &bg_layouts.shadow_occlusion_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_index_chunks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_shadow_mask.as_entire_binding(),
-                    },
+            ),
+            ambient_blur_static: device.bind_group(
+                "ambient_blur_static",
+                &bg_layouts.ambient_blur_static,
+                [
+                    samplers.linear.as_binding(),
+                    textures.noise_scalar.view().as_binding(),
                 ],
-            }),
+            ),
+            specular_static: device.bind_group(
+                "specular_static",
+                &bg_layouts.specular_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_palette.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_leaf_chunks.as_binding(),
+                    textures.noise_coshemi.view().as_binding(),
+                    samplers.nearest_repeat.as_binding(),
+                    samplers.linear.as_binding(),
+                    view_skybox_downsampled.as_binding(),
+                    buffers.acc_voxel_lighting.as_binding(),
+                ],
+            ),
+            deferred_static: device.bind_group(
+                "deferred_static",
+                &bg_layouts.deferred_static,
+                [
+                    samplers.linear.as_binding(),
+                    samplers.nearest_repeat.as_binding(),
+                    view_skybox.as_binding(),
+                    view_skybox_downsampled.as_binding(),
+                    view_skybox_prefilter.as_binding(),
+                    skybox.brdf.view().as_binding(),
+                    buffers.acc_voxel_lighting.as_binding(),
+                    buffers.voxel_shadow_mask.as_binding(),
+                    buffers.voxel_scene_metadata.as_binding(),
+                    textures.probe_irradiance.view().as_binding(),
+                    textures.probe_depth.view().as_binding(),
+                    buffers.probes.as_binding(),
+                ],
+            ),
+            fx_settings: device.bind_group(
+                "fx_settings",
+                &bg_layouts.fx_settings,
+                [buffers.fx_settings.as_binding()],
+            ),
+            shadow_occlusion_static: device.bind_group(
+                "shadow_occlusion_static",
+                &bg_layouts.shadow_occlusion_static,
+                [
+                    buffers.voxel_scene_metadata.as_binding(),
+                    buffers.voxel_index_chunks.as_binding(),
+                    buffers.voxel_shadow_mask.as_binding(),
+                ],
+            ),
         };
 
         let timing = device
@@ -1418,9 +1385,11 @@ impl Renderer {
             pipelines,
             bg_layouts,
             bind_groups,
-            textures,
+            screen_bind_groups: None,
             samplers,
             buffers,
+            textures,
+            screen_textures: None,
             timing,
             quad,
             frame_id: 0,
@@ -1431,6 +1400,7 @@ impl Renderer {
             scene_size: scene.meta.size,
             probe_size,
             shadow_update_requested: true,
+            shadow_occlusion_ttl: 0,
         };
 
         _self.update_screen_resources(&window, device);
@@ -1446,536 +1416,217 @@ impl Renderer {
         self.size = window
             .size()
             .map(|x| ((x as f32) * self.render_scale).ceil() as u32);
-        let size = wgpu::Extent3d {
-            width: self.size.x,
-            height: self.size.y,
-            depth_or_array_layers: 1,
-        };
-        let quarter_size = wgpu::Extent3d {
-            width: self.size.x.div_ceil(2),
-            height: self.size.y.div_ceil(2),
-            depth_or_array_layers: 1,
-        };
 
-        self.textures.gbuffer_albedo = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_albedo"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_albedo = self
-            .textures
-            .gbuffer_albedo
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
+        let gbuffer = ScreenTextures::create(device, self.size);
 
-        self.textures.gbuffer_voxel_id = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_voxel_id"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::R32Uint,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_voxel_id = self
-            .textures
-            .gbuffer_voxel_id
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
+        let albedo = gbuffer.albedo.view();
+        let voxel_id = gbuffer.voxel_id.view();
+        let normal = gbuffer.normal.view();
+        let depth = gbuffer.depth.view();
+        let velocity = gbuffer.velocity.view();
+        let gi_ray_radiance = gbuffer.gi_ray_radiance.view();
+        let gi_ray_direction = gbuffer.gi_ray_direction.view();
+        let gi_sh_sample_r = gbuffer.gi_sh_sample_rgb[0].view();
+        let gi_sh_sample_g = gbuffer.gi_sh_sample_rgb[1].view();
+        let gi_sh_sample_b = gbuffer.gi_sh_sample_rgb[2].view();
+        let gi_sh_reprojection_r = gbuffer.gi_sh_reprojection_rgb[0].view();
+        let gi_sh_reprojection_g = gbuffer.gi_sh_reprojection_rgb[1].view();
+        let gi_sh_reprojection_b = gbuffer.gi_sh_reprojection_rgb[2].view();
+        let gi_sh_r = gbuffer.gi_sh_rgb[0].view();
+        let gi_sh_g = gbuffer.gi_sh_rgb[1].view();
+        let gi_sh_b = gbuffer.gi_sh_rgb[2].view();
+        let gi_history = gbuffer.gi_history.view();
+        let specular = gbuffer.specular.view();
+        let specular_direction = gbuffer.specular_direction.view();
+        let specular_spatial = gbuffer.specular_spatial.view();
+        let acc_specular = gbuffer.acc_specular.view();
+        let deferred_output = gbuffer.deferred_output.view();
+        let out_color = gbuffer.out_color.view();
 
-        self.textures.gbuffer_normal = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_normal"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::R32Uint,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_normal = self
-            .textures
-            .gbuffer_normal
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
+        self.screen_textures = Some(gbuffer);
 
-        self.textures.gbuffer_depth = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_depth"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::R32Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_depth = self
-            .textures
-            .gbuffer_depth
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
+        let layouts = &self.bg_layouts;
 
-        self.textures.gbuffer_velocity = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_velocity"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_velocity = self
-            .textures
-            .gbuffer_velocity
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
-
-        self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gbuffer_specular"),
-            size: quarter_size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_gbuffer_specular = self
-            .textures
-            .gbuffer_specular
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
-
-        // self.textures.gbuffer_specular_velocity =
-        //     Some(device.create_texture(&wgpu::TextureDescriptor {
-        //         label: Some("gbuffer_specular_velocity"),
-        //         size: quarter_size,
-        //         sample_count: 1,
-        //         format: wgpu::TextureFormat::Rgba16Float,
-        //         dimension: wgpu::TextureDimension::D2,
-        //         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-        //         mip_level_count: 1,
-        //         view_formats: &[],
-        //     }));
-        // let view_gbuffer_specular_velocity = self
-        //     .textures
-        //     .gbuffer_specular_velocity
-        //     .as_ref()
-        //     .unwrap()
-        //     .create_view(&Default::default());
-
-        self.textures.gbuffer_specular_dir_pdf =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_specular_direction_pdf"),
-                size: quarter_size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_specular_dir_pdf = self
-            .textures
-            .gbuffer_specular_dir_pdf
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
-
-        self.textures.gbuffer_specular_spatial =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_specular_spatial"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_specular_spatial = self
-            .textures
-            .gbuffer_specular_spatial
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
-
-        self.textures.gbuffer_acc_specular =
-            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_specular"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_acc_specular = self
-            .textures
-            .gbuffer_acc_specular
-            .as_ref()
-            .unwrap()
-            .create_view(&Default::default());
-
-        self.textures.deferred_output = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("deferred_output"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_deferred_output = self.textures.deferred_output.as_ref().unwrap().create_view(
-            &wgpu::TextureViewDescriptor {
-                label: Some("deferred_output"),
-                ..Default::default()
-            },
-        );
-
-        self.textures.out_color = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
-            label: Some("out_color_a"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_out_color =
-            self.textures
-                .out_color
-                .as_ref()
-                .unwrap()
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("out_color"),
-                    ..Default::default()
-                });
-
-        self.bind_groups.raymarch_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("raymarch_gbuffer"),
-                layout: &self.bg_layouts.raymarch_gbuffer,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_albedo),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_voxel_id),
-                    },
+        self.screen_bind_groups = Some(ScreenBindGroups {
+            raymarch_gbuffer: device.bind_group(
+                "raymarch_gbuffer",
+                &layouts.raymarch_gbuffer,
+                [
+                    albedo.as_binding(),
+                    velocity.as_binding(),
+                    voxel_id.as_binding(),
                 ],
-            }));
-
-        self.bind_groups.raymarch_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("raymarch_swap"),
-                layout: &self.bg_layouts.raymarch_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_gbuffer_normal.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_depth.both(),
-                    },
+            ),
+            raymarch_swap: device.bind_group_swap(
+                "raymarch_swap",
+                &layouts.raymarch_swap,
+                [normal.both(), depth.both()],
+            ),
+            ambient_trace_gbuffer: device.bind_group(
+                "ambient_trace_gbuffer",
+                &layouts.ambient_trace_gbuffer,
+                [gi_ray_radiance.as_binding(), gi_ray_direction.as_binding()],
+            ),
+            ambient_project_gbuffer: device.bind_group(
+                "ambient_project_gbuffer",
+                &layouts.ambient_project_gbuffer,
+                [
+                    gi_ray_radiance.as_binding(),
+                    gi_ray_direction.as_binding(),
+                    gi_sh_sample_r.as_binding(),
+                    gi_sh_sample_g.as_binding(),
+                    gi_sh_sample_b.as_binding(),
                 ],
-            },
-        ));
-
-        self.bind_groups.specular_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("specular_gbuffer"),
-                layout: &self.bg_layouts.specular_gbuffer,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_specular_dir_pdf,
-                        ),
-                    },
-                    // wgpu::BindGroupEntry {
-                    //     binding: 1,
-                    //     resource: wgpu::BindingResource::TextureView(
-                    //         &view_gbuffer_specular_velocity,
-                    //     ),
-                    // },
+            ),
+            ambient_reproject_gbuffer: device.bind_group(
+                "ambient_reproject_gbuffer",
+                &layouts.ambient_reproject_gbuffer,
+                [
+                    gi_sh_sample_r.as_binding(),
+                    gi_sh_sample_g.as_binding(),
+                    gi_sh_sample_b.as_binding(),
+                    velocity.as_binding(),
+                    gi_sh_reprojection_r.as_binding(),
+                    gi_sh_reprojection_g.as_binding(),
+                    gi_sh_reprojection_b.as_binding(),
                 ],
-            }));
-
-        self.bind_groups.specular_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("specular_swap"),
-                layout: &self.bg_layouts.specular_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_gbuffer_normal.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_depth.both(),
-                    },
+            ),
+            ambient_reproject_swap: device.bind_group_swap(
+                "ambient_reproject_swap",
+                &layouts.ambient_reproject_swap,
+                [
+                    gi_history.both(),
+                    gi_sh_r.both_reversed(),
+                    gi_sh_g.both_reversed(),
+                    gi_sh_b.both_reversed(),
+                    gi_history.both_reversed(),
+                    normal.both(),
+                    depth.both(),
+                    normal.both_reversed(),
+                    depth.both_reversed(),
                 ],
-            },
-        ));
-
-        self.bind_groups.spec_spatial_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("specular_spatial_gbuffer"),
-                layout: &self.bg_layouts.spec_spatial_gbuffer,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_specular_dir_pdf,
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_specular_spatial,
-                        ),
-                    },
+            ),
+            ambient_blur_gbuffer: device.bind_group(
+                "ambient_blur_gbuffer",
+                &layouts.ambient_blur_gbuffer,
+                [
+                    gi_sh_reprojection_r.as_binding(),
+                    gi_sh_reprojection_g.as_binding(),
+                    gi_sh_reprojection_b.as_binding(),
                 ],
-            }));
-
-        self.bind_groups.spec_resolve_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("specular_resolve_gbuffer"),
-                layout: &self.bg_layouts.spec_resolve_gbuffer,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_specular_spatial,
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(
-                            // &view_gbuffer_specular_velocity,
-                            &view_gbuffer_specular_dir_pdf,
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
-                    },
+            ),
+            ambient_blur_swap: device.bind_group_swap(
+                "ambient_blur_swap",
+                &layouts.ambient_blur_swap,
+                [
+                    gi_sh_r.both(),
+                    gi_sh_g.both(),
+                    gi_sh_b.both(),
+                    gi_history.both(),
+                    depth.both(),
                 ],
-            }));
-
-        self.bind_groups.spec_resolve_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("specular_resolve_swap"),
-                layout: &self.bg_layouts.spec_resolve_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_gbuffer_acc_specular.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_acc_specular.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: view_gbuffer_normal.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 3,
-                        resource: view_gbuffer_normal.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 4,
-                        resource: view_gbuffer_depth.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 5,
-                        resource: view_gbuffer_depth.both_reversed(),
-                    },
+            ),
+            specular_gbuffer: device.bind_group(
+                "specular_gbuffer",
+                &layouts.specular_gbuffer,
+                [specular.as_binding(), specular_direction.as_binding()],
+            ),
+            specular_swap: device.bind_group_swap(
+                "specular_swap",
+                &layouts.specular_swap,
+                [normal.both(), depth.both()],
+            ),
+            spec_spatial_gbuffer: device.bind_group(
+                "specular_spatial_gbuffer",
+                &layouts.spec_spatial_gbuffer,
+                [
+                    specular.as_binding(),
+                    specular_direction.as_binding(),
+                    velocity.as_binding(),
                 ],
-            },
-        ));
-
-        self.bind_groups.deferred_gbuffer =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("deferred_gbuffer"),
-                layout: &self.bg_layouts.deferred_gbuffer,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_deferred_output),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_albedo),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_voxel_id),
-                    },
+            ),
+            spec_resolve_gbuffer: device.bind_group(
+                "specular_resolve_gbuffer",
+                &layouts.spec_resolve_gbuffer,
+                [
+                    self.samplers.linear.as_binding(),
+                    specular_spatial.as_binding(),
+                    specular_direction.as_binding(),
+                    velocity.as_binding(),
                 ],
-            }));
-
-        self.bind_groups.deferred_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("deferred_swap"),
-                layout: &self.bg_layouts.deferred_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_gbuffer_normal.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_depth.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        // resource: SwapchainBindingResource::Single(
-                        //     wgpu::BindingResource::TextureView(&view_gbuffer_specular_spatial),
-                        // ),
-                        resource: view_gbuffer_acc_specular.both(),
-                    },
+            ),
+            spec_resolve_swap: device.bind_group_swap(
+                "specular_resolve_swap",
+                &layouts.spec_resolve_swap,
+                [
+                    acc_specular.both(),
+                    acc_specular.both_reversed(),
+                    normal.both(),
+                    normal.both_reversed(),
+                    depth.both(),
+                    depth.both_reversed(),
                 ],
-            },
-        ));
-
-        self.bind_groups.taa_input = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("taa_input"),
-            layout: &self.bg_layouts.taa_input,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view_deferred_output),
-                },
-            ],
-        }));
-
-        self.bind_groups.taa_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("taa_output_swap"),
-                layout: &self.bg_layouts.taa_output,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_out_color.both_reversed(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_out_color.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: view_gbuffer_depth.both(),
-                    },
+            ),
+            deferred_gbuffer: device.bind_group(
+                "deferred_gbuffer",
+                &layouts.deferred_gbuffer,
+                [
+                    deferred_output.as_binding(),
+                    albedo.as_binding(),
+                    velocity.as_binding(),
+                    voxel_id.as_binding(),
                 ],
-            },
-        ));
-
-        self.bind_groups.fx_input_swap = Some(
-            device.create_bind_group_swap(&SwapchainBindGroupDescriptor {
-                label: Some("fx_input_swap"),
-                layout: &self.bg_layouts.fx_input,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: view_out_color.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: SwapchainBindingResource::Single(wgpu::BindingResource::Sampler(
-                            &self.samplers.linear,
-                        )),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: SwapchainBindingResource::Single(
-                            wgpu::BindingResource::TextureView(
-                                &self
-                                    .textures
-                                    .tonemap_mcmapface_lut
-                                    .create_view(&Default::default()),
-                            ),
-                        ),
-                    },
+            ),
+            deferred_swap: device.bind_group_swap(
+                "deferred_swap",
+                &layouts.deferred_swap,
+                [
+                    normal.both(),
+                    depth.both(),
+                    acc_specular.both(),
+                    gi_sh_r.both(),
+                    gi_sh_g.both(),
+                    gi_sh_b.both(),
+                    gi_history.both(),
                 ],
-            }),
-        );
-
-        self.bind_groups.probe_visualize_swap = Some(device.create_bind_group_swap(
-            &SwapchainBindGroupDescriptor {
-                label: Some("probe_visualize_swap"),
-                layout: &self.bg_layouts.probe_visualize_swap,
-                entries: &[
-                    SwapchainBindGroupEntry {
-                        binding: 0,
-                        resource: SwapchainBindingResource::Single(
-                            self.buffers.voxel_scene_metadata.as_entire_binding(),
-                        ),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 1,
-                        resource: view_gbuffer_depth.both(),
-                    },
-                    SwapchainBindGroupEntry {
-                        binding: 2,
-                        resource: SwapchainBindingResource::Single(
-                            self.buffers.probes.as_entire_binding(),
-                        ),
-                    },
+            ),
+            taa_input: device.bind_group(
+                "taa_input",
+                &layouts.taa_input,
+                [
+                    self.samplers.linear.as_binding(),
+                    velocity.as_binding(),
+                    deferred_output.as_binding(),
                 ],
-            },
-        ));
+            ),
+            taa_swap: device.bind_group_swap(
+                "taa_swap",
+                &layouts.taa_output,
+                [out_color.both_reversed(), out_color.both(), depth.both()],
+            ),
+            fx_input_swap: device.bind_group_swap(
+                "fx_input_swap",
+                &layouts.fx_input,
+                [
+                    out_color.both(),
+                    SwapchainBindingResource::Single(self.samplers.linear.as_binding()),
+                    SwapchainBindingResource::Single(
+                        self.textures.tonemap_mcmapface_lut.view().as_binding(),
+                    ),
+                ],
+            ),
+            probe_visualize_swap: device.bind_group_swap(
+                "probe_visualize_swap",
+                &layouts.probe_visualize_swap,
+                [
+                    SwapchainBindingResource::Single(
+                        self.buffers.voxel_scene_metadata.as_binding(),
+                    ),
+                    depth.both(),
+                    SwapchainBindingResource::Single(self.buffers.probes.as_binding()),
+                ],
+            ),
+        });
     }
 
     pub fn fixed_update(&mut self, ctx: RendererCtx<'_>) {
@@ -2086,7 +1737,7 @@ impl Renderer {
                     prev_camera,
                     shadow_spread: config.shadow_spread,
                     per_voxel_secondary: config.per_voxel_secondary as u32,
-                    shadow_filter_radius: config.shadow_filter_radius,
+                    ambient_filter_scale: config.ambient_filter_scale,
                     max_ambient_distance: config.ambient_ray_max_distance,
                     voxel_normal_factor: config.voxel_normal_factor,
                     roughness_multiplier: config.roughness_multiplier,
@@ -2136,74 +1787,84 @@ impl Renderer {
         // shadow occlusion pass
         if self.shadow_update_requested {
             self.shadow_update_requested = false;
-
-            // encoder.clear_buffer(&self.buffers.acc_voxel_lighting, 0, None);
+            self.shadow_occlusion_ttl = 64;
             encoder.clear_buffer(&self.buffers.voxel_shadow_mask, 0, None);
-            // let mut pass = encoder.begin_compute_pass_timed("Shadow Occlusion", &mut self.timing);
+        }
+        if self.shadow_occlusion_ttl > 0 {
+            self.shadow_occlusion_ttl -= 1;
+
             let mut pass = encoder.begin_compute_pass(&Default::default());
 
             pass.set_pipeline(&self.pipelines.shadow_occlusion);
             pass.set_bind_group(0, &self.bind_groups.shadow_occlusion_static, &[]);
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
+            let frame_index = 64 - self.shadow_occlusion_ttl;
+            pass.set_immediates(
+                0,
+                &bytemuck::cast_slice(&[noise::HALTON_64[(frame_index as usize) & 63]]),
+            );
+
             pass.insert_debug_marker("shadow occlusion");
 
             let group_size = self.scene_size.map(|x| x.div_ceil(8).max(2));
-            let group_count = 4
-                * (group_size.x * group_size.y
-                    + group_size.x * group_size.z
-                    + group_size.y * group_size.z);
+            let group_count = group_size.x * group_size.y
+                + group_size.x * group_size.z
+                + group_size.y * group_size.z;
             let wg_x = group_count.min(65535);
             let wg_y = group_count.div_ceil(wg_x);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 
-        // probe trace pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Probe Trace", &mut self.timing);
+        // // probe trace pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Probe Trace", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.probe_trace);
-            pass.set_bind_group(0, &self.bind_groups.probe_trace_static, &[]);
-            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+        //     pass.set_pipeline(&self.pipelines.probe_trace);
+        //     pass.set_bind_group(0, &self.bind_groups.probe_trace_static, &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("probe trace");
+        //     pass.insert_debug_marker("probe trace");
 
-            pass.dispatch_workgroups(self.probe_size.x, self.probe_size.y, self.probe_size.z);
-        }
+        //     pass.dispatch_workgroups(self.probe_size.x, self.probe_size.y, self.probe_size.z);
+        // }
 
-        // probe update pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Probe Update", &mut self.timing);
+        // // probe update pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Probe Update", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.probe_update);
-            pass.set_bind_group(0, &self.bind_groups.probe_update_static, &[]);
-            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+        //     pass.set_pipeline(&self.pipelines.probe_update);
+        //     pass.set_bind_group(0, &self.bind_groups.probe_update_static, &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("probe update");
+        //     pass.insert_debug_marker("probe update");
 
-            pass.dispatch_workgroups(self.probe_size.x, self.probe_size.y, self.probe_size.z);
-        }
+        //     pass.dispatch_workgroups(self.probe_size.x, self.probe_size.y, self.probe_size.z);
+        // }
 
-        // probe border update pass
-        {
-            let mut pass =
-                encoder.begin_compute_pass_timed("Probe Border Update", &mut self.timing);
+        // // probe border update pass
+        // {
+        //     let mut pass =
+        //         encoder.begin_compute_pass_timed("Probe Border Update", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.probe_border);
-            pass.set_bind_group(0, &self.bind_groups.probe_update_static, &[]);
+        //     pass.set_pipeline(&self.pipelines.probe_border);
+        //     pass.set_bind_group(0, &self.bind_groups.probe_update_static, &[]);
 
-            pass.insert_debug_marker("probe border");
+        //     pass.insert_debug_marker("probe border");
 
-            pass.dispatch_workgroups(self.probe_size.x, self.probe_size.y, self.probe_size.z);
-        }
+        //     pass.dispatch_workgroups(self.probe_size.x, self.probe_size.y, self.probe_size.z);
+        // }
+        let Some(screen_bind_groups) = &self.screen_bind_groups else {
+            return;
+        };
 
         // raymarch pass
         {
             let mut pass = encoder.begin_compute_pass_timed("Raymarch", &mut self.timing);
 
             pass.set_pipeline(&self.pipelines.raymarch);
-            pass.set_bind_group(0, &self.bind_groups.raymarch_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.raymarch_swap, &[], self.frame_id);
+            pass.set_bind_group(0, &screen_bind_groups.raymarch_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &screen_bind_groups.raymarch_swap, &[], self.frame_id);
             pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
@@ -2211,114 +1872,191 @@ impl Renderer {
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
-        // copy over indirect args for the per-voxel dispatches
+        // ambient trace pass
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let mut pass = encoder.begin_compute_pass_timed("Ambient Trace", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.voxel_indirect_args);
-            pass.set_bind_group(0, &self.bind_groups.voxel_indirect_args, &[]);
-
-            pass.insert_debug_marker("voxel indirect args");
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-
-        // shadow pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
-
-            pass.set_pipeline(&self.pipelines.shadow);
-            pass.set_bind_group(0, &self.bind_groups.shadow_static, &[]);
-            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
-
-            pass.insert_debug_marker("shadow");
-            pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
-        }
-
-        // copy over indirect args for the per-chunk dispatches
-        {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
-
-            pass.set_pipeline(&self.pipelines.chunk_indirect_args);
-            pass.set_bind_group(0, &self.bind_groups.chunk_indirect_args, &[]);
-
-            pass.insert_debug_marker("chunk indirect args");
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-
-        // ambient pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Ambient", &mut self.timing);
-
-            pass.set_pipeline(&self.pipelines.ambient);
-            pass.set_bind_group(0, &self.bind_groups.ambient_static, &[]);
-            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
-
-            pass.insert_debug_marker("ambient");
-            pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
-        }
-
-        // resolve pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Resolve", &mut self.timing);
-
-            pass.set_pipeline(&self.pipelines.resolve);
-            pass.set_bind_group(0, Some(&self.bind_groups.resolve), &[]);
-            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
-
-            pass.insert_debug_marker("resolve");
-            pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
-        }
-
-        // specular pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
-
-            pass.set_pipeline(&self.pipelines.specular);
-            pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
-            pass.set_bind_group(2, &self.bind_groups.specular_static, &[]);
+            pass.set_pipeline(&self.pipelines.ambient_trace);
+            pass.set_bind_group(0, &screen_bind_groups.ambient_trace_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &screen_bind_groups.specular_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.ambient_trace_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
             let size_quarter = self.size.map(|x| x.div_ceil(2));
 
-            pass.insert_debug_marker("specular");
+            pass.insert_debug_marker("ambient trace");
             pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
         }
 
-        // specular spatial filter pass
+        // ambient project pass
         {
-            let mut pass =
-                encoder.begin_compute_pass_timed("Specular Spatial Filter", &mut self.timing);
+            let mut pass = encoder.begin_compute_pass_timed("Ambient Project", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.specular_spatial);
-            pass.set_bind_group(0, &self.bind_groups.spec_spatial_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
-            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_pipeline(&self.pipelines.ambient_project);
+            pass.set_bind_group(0, &screen_bind_groups.ambient_project_gbuffer, &[]);
 
-            pass.insert_debug_marker("specular spatial");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+            let size_half = self.size.map(|x| x.div_ceil(2));
+
+            pass.insert_debug_marker("ambient project");
+            pass.dispatch_workgroups(size_half.x.div_ceil(8), size_half.y.div_ceil(8), 1);
         }
 
-        // specular resolve pass
+        // ambient reproject pass
         {
-            let mut pass = encoder.begin_compute_pass_timed("Specular Resolve", &mut self.timing);
+            let mut pass = encoder.begin_compute_pass_timed("Ambient Reproject", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.specular_resolve);
-            pass.set_bind_group(0, &self.bind_groups.spec_resolve_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.spec_resolve_swap, &[], self.frame_id);
+            pass.set_pipeline(&self.pipelines.ambient_reproject);
+            pass.set_bind_group(0, &screen_bind_groups.ambient_reproject_gbuffer, &[]);
+            pass.set_bind_group_swap(
+                1,
+                &screen_bind_groups.ambient_reproject_swap,
+                &[],
+                self.frame_id,
+            );
             pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("specular resolve");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+            let size_half = self.size.map(|x| x.div_ceil(2));
+
+            pass.insert_debug_marker("ambient reproject");
+            pass.dispatch_workgroups(size_half.x.div_ceil(8), size_half.y.div_ceil(8), 1);
         }
+
+        // ambient blur pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Ambient Blur", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.ambient_blur);
+            pass.set_bind_group(0, &screen_bind_groups.ambient_blur_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &screen_bind_groups.ambient_blur_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.ambient_blur_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+
+            let size_half = self.size.map(|x| x.div_ceil(2));
+
+            pass.insert_debug_marker("ambient blur");
+            pass.dispatch_workgroups(size_half.x.div_ceil(8), size_half.y.div_ceil(8), 1);
+        }
+
+        // // copy over indirect args for the per-voxel dispatches
+        // {
+        //     let mut pass = encoder.begin_compute_pass(&Default::default());
+
+        //     pass.set_pipeline(&self.pipelines.voxel_indirect_args);
+        //     pass.set_bind_group(0, &self.bind_groups.voxel_indirect_args, &[]);
+
+        //     pass.insert_debug_marker("voxel indirect args");
+        //     pass.dispatch_workgroups(1, 1, 1);
+        // }
+
+        // // shadow pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.shadow);
+        //     pass.set_bind_group(0, &self.bind_groups.shadow_static, &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("shadow");
+        //     pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
+        // }
+
+        // // copy over indirect args for the per-chunk dispatches
+        // {
+        //     let mut pass = encoder.begin_compute_pass(&Default::default());
+
+        //     pass.set_pipeline(&self.pipelines.chunk_indirect_args);
+        //     pass.set_bind_group(0, &self.bind_groups.chunk_indirect_args, &[]);
+
+        //     pass.insert_debug_marker("chunk indirect args");
+        //     pass.dispatch_workgroups(1, 1, 1);
+        // }
+
+        // // ambient pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Ambient", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.ambient);
+        //     pass.set_bind_group(0, &self.bind_groups.ambient_static, &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("ambient");
+        //     pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
+        // }
+
+        // // chunk resolve pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Chunk Resolve", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.chunk_resolve);
+        //     pass.set_bind_group(0, &self.bind_groups.chunk_resolve_static, &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("chunk resolve");
+        //     pass.dispatch_workgroups_indirect(&self.buffers.chunk_indirect_args, 0);
+        // }
+
+        // // resolve pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Resolve", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.resolve);
+        //     pass.set_bind_group(0, Some(&self.bind_groups.resolve), &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("resolve");
+        //     pass.dispatch_workgroups_indirect(&self.buffers.voxel_indirect_args, 0);
+        // }
+
+        // // specular pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.specular);
+        //     pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
+        //     pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.specular_static, &[]);
+        //     pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+
+        //     let size_quarter = self.size.map(|x| x.div_ceil(2));
+
+        //     pass.insert_debug_marker("specular");
+        //     pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
+        // }
+
+        // // specular spatial filter pass
+        // {
+        //     let mut pass =
+        //         encoder.begin_compute_pass_timed("Specular Spatial Filter", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.specular_spatial);
+        //     pass.set_bind_group(0, &self.bind_groups.spec_spatial_gbuffer, &[]);
+        //     pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("specular spatial");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        // }
+
+        // // specular resolve pass
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Specular Resolve", &mut self.timing);
+
+        //     pass.set_pipeline(&self.pipelines.specular_resolve);
+        //     pass.set_bind_group(0, &self.bind_groups.spec_resolve_gbuffer, &[]);
+        //     pass.set_bind_group_swap(1, &self.bind_groups.spec_resolve_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+
+        //     pass.insert_debug_marker("specular resolve");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        // }
 
         // deferred pass
         {
             let mut pass = encoder.begin_compute_pass_timed("Deferred", &mut self.timing);
 
             pass.set_pipeline(&self.pipelines.deferred);
-            pass.set_bind_group(0, &self.bind_groups.deferred_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.deferred_swap, &[], self.frame_id);
+            pass.set_bind_group(0, &screen_bind_groups.deferred_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &screen_bind_groups.deferred_swap, &[], self.frame_id);
             pass.set_bind_group(2, &self.bind_groups.deferred_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
@@ -2332,11 +2070,11 @@ impl Renderer {
                 label: Some("probe_visualize"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self
-                        .textures
-                        .deferred_output
+                        .screen_textures
                         .as_ref()
                         .unwrap()
-                        .create_view(&Default::default()),
+                        .deferred_output
+                        .view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2351,7 +2089,7 @@ impl Renderer {
             pass.set_pipeline(&self.pipelines.probe_visualize);
             pass.set_bind_group_swap(
                 0,
-                &self.bind_groups.probe_visualize_swap,
+                &screen_bind_groups.probe_visualize_swap,
                 &[],
                 self.frame_id,
             );
@@ -2366,8 +2104,8 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.taa);
             pass.set_bind_group(0, &self.bind_groups.per_frame_shared, &[]);
-            pass.set_bind_group(1, &self.bind_groups.taa_input, &[]);
-            pass.set_bind_group_swap(2, &self.bind_groups.taa_swap, &[], self.frame_id);
+            pass.set_bind_group(1, &screen_bind_groups.taa_input, &[]);
+            pass.set_bind_group_swap(2, &screen_bind_groups.taa_swap, &[], self.frame_id);
 
             pass.insert_debug_marker("taa");
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
@@ -2391,7 +2129,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&descriptor);
 
             pass.set_pipeline(&self.pipelines.fx);
-            pass.set_bind_group_swap(0, &self.bind_groups.fx_input_swap, &[], self.frame_id);
+            pass.set_bind_group_swap(0, &screen_bind_groups.fx_input_swap, &[], self.frame_id);
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
             pass.set_bind_group(2, &self.bind_groups.fx_settings, &[]);
 

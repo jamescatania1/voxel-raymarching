@@ -1,6 +1,6 @@
 @group(0) @binding(0) var tex_probe_rays: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(1) var tex_probe_irradiance: texture_storage_2d<rgba16float, read_write>;
-@group(0) @binding(2) var tex_depth: texture_storage_2d<rg16float, read_write>;
+@group(0) @binding(2) var tex_depth: texture_storage_2d<rgba16float, read_write>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -12,7 +12,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -50,7 +50,7 @@ struct ComputeIn {
     @builtin(local_invocation_index) local_index: u32,
 }
 
-const ACC_ALPHA: f32 = 0.03;
+const ACC_ALPHA: f32 = 0.003;
 
 struct ProbeRay {
     radiance: vec3<f32>,

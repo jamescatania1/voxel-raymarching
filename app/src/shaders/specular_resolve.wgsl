@@ -20,7 +20,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -193,7 +193,6 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 }
 
 fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
-    return true;
     if acc.is_sky {
         return false;
     }

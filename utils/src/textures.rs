@@ -29,7 +29,7 @@ pub struct SwapchainTextureView {
     pub b: wgpu::TextureView,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SwapchainBindingResource<'a> {
     Single(wgpu::BindingResource<'a>),
     Swap(wgpu::BindingResource<'a>, wgpu::BindingResource<'a>),
@@ -136,7 +136,7 @@ pub trait PassSwapExt {
     fn set_bind_group_swap<'a>(
         &mut self,
         index: u32,
-        bind_group: &'a Option<SwapchainBindGroup>,
+        bind_group: &'a SwapchainBindGroup,
         offsets: &[wgpu::DynamicOffset],
         frame_id: u32,
     );
@@ -146,15 +146,15 @@ impl PassSwapExt for wgpu::ComputePass<'_> {
     fn set_bind_group_swap<'a>(
         &mut self,
         index: u32,
-        bind_group: &'a Option<SwapchainBindGroup>,
+        bind_group: &'a SwapchainBindGroup,
         offsets: &[wgpu::DynamicOffset],
         frame_id: u32,
     ) {
         self.set_bind_group(
             index,
             match frame_id & 1 {
-                0 => Some(&bind_group.as_ref().unwrap().a),
-                _ => Some(&bind_group.as_ref().unwrap().b),
+                0 => Some(&bind_group.a),
+                _ => Some(&bind_group.b),
             },
             offsets,
         );
@@ -165,15 +165,15 @@ impl PassSwapExt for wgpu::RenderPass<'_> {
     fn set_bind_group_swap<'a>(
         &mut self,
         index: u32,
-        bind_group: &'a Option<SwapchainBindGroup>,
+        bind_group: &'a SwapchainBindGroup,
         offsets: &[wgpu::DynamicOffset],
         frame_id: u32,
     ) {
         self.set_bind_group(
             index,
             match frame_id & 1 {
-                0 => Some(&bind_group.as_ref().unwrap().a),
-                _ => Some(&bind_group.as_ref().unwrap().b),
+                0 => Some(&bind_group.a),
+                _ => Some(&bind_group.b),
             },
             offsets,
         );

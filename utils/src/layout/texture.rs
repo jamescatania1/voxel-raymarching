@@ -18,7 +18,7 @@ use crate::layout::ext::{LayoutBindingType, LayoutEntry};
 ///
 /// Corresponds to [WebGPU `GPUTextureBindingLayout`](
 /// https://gpuweb.github.io/gpuweb/#dictdef-gputexturebindinglayout).
-pub fn texture() -> TextureBase {
+pub fn sampled_texture() -> TextureBase {
     TextureBase {}
 }
 

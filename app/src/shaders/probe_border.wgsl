@@ -1,6 +1,6 @@
 @group(0) @binding(0) var tex_probe_rays: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(1) var tex_probe_irradiance: texture_storage_2d<rgba16float, read_write>;
-@group(0) @binding(2) var tex_probe_depth: texture_storage_2d<rg16float, read_write>;
+@group(0) @binding(2) var tex_probe_depth: texture_storage_2d<rgba16float, read_write>;
 
 struct ComputeIn {
     @builtin(num_workgroups) num_workgroups: vec3<u32>,

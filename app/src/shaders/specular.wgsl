@@ -51,7 +51,7 @@ struct Environment {
     prev_camera: Camera,
     shadow_spread: f32,
     filter_shadows: u32,
-    shadow_filter_radius: f32,
+    ambient_filter_scale: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
     roughness_multiplier: f32,
@@ -218,7 +218,7 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
 
         let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
 
-        let direct = environment.sun_color * environment.sun_intensity * ndl * (1.0 - lighting.shadow);
+        let direct = environment.sun_color * environment.sun_intensity * ndl * lighting.shadow;
         let indirect = lighting.irradiance;
 
         var emissive = vec3(0.0);

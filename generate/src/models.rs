@@ -9,7 +9,9 @@ use anyhow::{Context, Result, bail};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use serde::{Deserialize, Serialize};
 use utils::{
-    layout::{DeviceUtils, sampler, storage_buffer, storage_texture, texture, uniform_buffer},
+    layout::{
+        DeviceUtils, sampled_texture, sampler, storage_buffer, storage_texture, uniform_buffer,
+    },
     pipeline::PipelineUtils,
     tree::Tree,
 };
@@ -331,7 +333,7 @@ fn layouts(device: &wgpu::Device, scene_texture_count: u32) -> (Pipelines, BindG
         voxelize_scene_textures: device.layout(
             "voxelize_scene_textures",
             wgpu::ShaderStages::COMPUTE,
-            texture()
+            sampled_texture()
                 .float()
                 .dimension_2d()
                 .count(std::num::NonZeroU32::new(scene_texture_count).unwrap()),
